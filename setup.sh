@@ -151,7 +151,7 @@ remove_all() {
     echo "     • OpenWebUI:        ~/openwebui"
     echo "     • Local SearXNG:    ~/searxng"
     echo "     • Logs:             ~/logs"
-    echo "     • PATH links:       ${brew_bin:-<brew bin>}/{chati,ailocal}"
+    echo "     • PATH links:       chati/ailocal (${brew_bin:+$brew_bin and }$HOME/.local/bin)"
     echo "     • Autostart agent:  ~/Library/LaunchAgents/com.chati.ailocal.plist"
     echo "     • Repo state:       .env, .active_ollama_model.txt, .web_cache,"
     echo "                         conversation_histories/, ola_chat/instances/"
@@ -195,10 +195,14 @@ remove_all() {
     ok "Services stopped"
 
     step "Removing the 'chati' and 'ailocal' PATH links"
-    if [[ -n "$brew_bin" ]]; then
-        [[ -L "$brew_bin/chati" ]] && rm -f "$brew_bin/chati"
-        [[ -L "$brew_bin/ailocal" ]] && rm -f "$brew_bin/ailocal"
-    fi
+    # Remove from wherever setup linked: Homebrew's bin (macOS) and/or
+    # ~/.local/bin (Linux). Checking both is harmless and covers either OS.
+    local _lb
+    for _lb in "$brew_bin" "$HOME/.local/bin"; do
+        [[ -z "$_lb" ]] && continue
+        [[ -L "$_lb/chati" ]] && rm -f "$_lb/chati"
+        [[ -L "$_lb/ailocal" ]] && rm -f "$_lb/ailocal"
+    done
     ok "Links removed"
 
     step "Removing the login autostart agent (if any)"
