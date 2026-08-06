@@ -62,6 +62,15 @@ recommend_model() {
     else                      echo "$DEFAULT_CHAT_MODEL"; fi     # detection failed → fallback
 }
 
+# NVIDIA VRAM in GB (0 if no nvidia-smi / no GPU). On Linux the model must fit
+# VRAM, not system RAM — a 62 GB box with a 16 GB GPU should NOT default to a
+# 17 GB model (it would spill to CPU and crawl). Ollama sizing tracks VRAM here.
+detect_vram_gb() {
+    command -v nvidia-smi >/dev/null 2>&1 || { echo 0; return; }
+    local mib; mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
+    [[ -n "$mib" ]] && echo $(( mib / 1024 )) || echo 0
+}
+
 # ---- Pretty output helpers ---------------------------------------------------
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 ok()   { printf '   \033[32m✅ %s\033[0m\n' "$1"; }
@@ -292,30 +301,52 @@ echo "🚀 chati setup — repo at: $REPO_ROOT"
 
 # ---- 1. Platform check -------------------------------------------------------
 step "Checking platform"
-[[ "$OSTYPE" == darwin* ]] || die "This installer targets macOS. Detected: $OSTYPE"
-ok "macOS detected"
+case "$OSTYPE" in
+    darwin*) CHATI_PLATFORM=macos; ok "macOS detected" ;;
+    linux*)  CHATI_PLATFORM=linux; ok "Linux detected" ;;
+    *)       die "Unsupported platform: $OSTYPE (this fork targets macOS and Linux)" ;;
+esac
 
-# ---- 2. Homebrew -------------------------------------------------------------
-step "Ensuring Homebrew is installed"
-if ! command -v brew >/dev/null 2>&1; then
-    warn "Homebrew not found — installing (you may be prompted for your password)…"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-fi
-# Make brew usable in THIS shell whether it's Apple-silicon or Intel.
-if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -x /usr/local/bin/brew ]]; then
-    eval "$(/usr/local/bin/brew shellenv)"
-fi
-command -v brew >/dev/null 2>&1 || die "Homebrew still not on PATH. Open a new terminal and re-run ./setup.sh"
-ok "Homebrew ready ($(brew --version | head -1))"
+# ---- 2-3. Dependencies -------------------------------------------------------
+if [[ "$CHATI_PLATFORM" == macos ]]; then
+    step "Ensuring Homebrew is installed"
+    if ! command -v brew >/dev/null 2>&1; then
+        warn "Homebrew not found — installing (you may be prompted for your password)…"
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+    # Make brew usable in THIS shell whether it's Apple-silicon or Intel.
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    command -v brew >/dev/null 2>&1 || die "Homebrew still not on PATH. Open a new terminal and re-run ./setup.sh"
+    ok "Homebrew ready ($(brew --version | head -1))"
 
-# ---- 3. Homebrew packages ----------------------------------------------------
-# Single source of truth = installer/Brewfile. No second package list to drift.
-step "Installing Homebrew packages (from installer/Brewfile)"
-[[ -f "$BREWFILE" ]] || die "Brewfile missing at $BREWFILE — is the checkout complete?"
-brew bundle --file="$BREWFILE"
-ok "Packages installed / up to date"
+    # Single source of truth = installer/Brewfile. No second package list to drift.
+    step "Installing Homebrew packages (from installer/Brewfile)"
+    [[ -f "$BREWFILE" ]] || die "Brewfile missing at $BREWFILE — is the checkout complete?"
+    brew bundle --file="$BREWFILE"
+    ok "Packages installed / up to date"
+else
+    # Linux (Debian/Ubuntu). Same tools as the Brewfile, via apt; groovy (docr's
+    # PDF-graphics helper) is skipped here — docr falls back to tesseract.
+    step "Installing packages with apt (you may be prompted for your password)"
+    command -v apt-get >/dev/null 2>&1 || die "This Linux path expects apt-get (Debian/Ubuntu). For another distro, install: curl jq lynx tesseract imagemagick ghostscript poppler-utils python3 python3-venv, then re-run with --no-pull."
+    sudo apt-get update -y
+    sudo apt-get install -y curl jq lynx tesseract-ocr tesseract-ocr-eng \
+        imagemagick ghostscript poppler-utils python3 python3-venv
+    ok "apt packages installed"
+    # uv (SearXNG venvs) and Ollama via their official Linux installers if absent.
+    if ! command -v uv >/dev/null 2>&1; then
+        step "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; ok "uv installed"
+    fi
+    if ! command -v ollama >/dev/null 2>&1; then
+        step "Installing Ollama (official Linux installer)"
+        curl -fsSL https://ollama.com/install.sh | sh
+        ok "Ollama installed"
+    fi
+fi
 
 # ---- 4. Directories ----------------------------------------------------------
 step "Creating local directories"
@@ -338,12 +369,21 @@ ok "Scripts are executable"
 # resolves symlinks to locate its repo; ailocal uses $HOME-based paths and
 # doesn't care where it's invoked from — so both work from any directory.
 step "Linking 'chati' and 'ailocal' onto your PATH"
-BREW_BIN="$(brew --prefix)/bin"
-if ln -sf "$REPO_ROOT/chati" "$BREW_BIN/chati" 2>/dev/null \
-   && ln -sf "$REPO_ROOT/ai_local/ailocal" "$BREW_BIN/ailocal" 2>/dev/null; then
-    ok "You can now run 'chati' and 'ailocal' from anywhere"
+# macOS links into Homebrew's bin (already on PATH); Linux uses ~/.local/bin.
+if [[ "$CHATI_PLATFORM" == macos ]]; then
+    LINK_BIN="$(brew --prefix)/bin"
 else
-    warn "Couldn't link into $BREW_BIN — run them as ./chati and ./ai_local/ailocal, or add the repo to your PATH."
+    LINK_BIN="$HOME/.local/bin"; mkdir -p "$LINK_BIN"
+fi
+if ln -sf "$REPO_ROOT/chati" "$LINK_BIN/chati" 2>/dev/null \
+   && ln -sf "$REPO_ROOT/ai_local/ailocal" "$LINK_BIN/ailocal" 2>/dev/null; then
+    ok "Linked into $LINK_BIN — run 'chati' and 'ailocal' from anywhere"
+    case ":$PATH:" in
+        *":$LINK_BIN:"*) : ;;
+        *) warn "$LINK_BIN is not on your PATH. Add it (e.g. in ~/.bashrc): export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+    esac
+else
+    warn "Couldn't link into $LINK_BIN — run them as ./chati and ./ai_local/ailocal, or add the repo to your PATH."
 fi
 
 # ---- 5c. Apple Vision OCR helper (macOS) ------------------------------------
@@ -352,7 +392,9 @@ fi
 # directly). Non-fatal: if swiftc is missing or the build fails, chati falls
 # back to docr/tesseract automatically.
 step "Building the Apple Vision OCR helper"
-if command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
+if [[ "$CHATI_PLATFORM" != macos ]]; then
+    ok "Skipped on Linux — OCR uses tesseract/pdftotext (Apple Vision is macOS-only)"
+elif command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
     if swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null; then
         ok "Apple Vision OCR ready (docr/ocrvision) — the default OCR engine on macOS"
     else
@@ -385,14 +427,22 @@ step "Ensuring a chat model is available"
 installed_models() { ollama list 2>/dev/null | tail -n +2 | awk '{print $1}'; }
 have_any_model() { [[ -n "$(installed_models)" ]]; }
 
-# Pick a model sized for this Mac's memory, unless the user forced --model.
+# Pick a model sized for the machine, unless the user forced --model. macOS
+# (unified memory) sizes by RAM; Linux with an NVIDIA GPU sizes by VRAM, since
+# a model bigger than VRAM spills to CPU and crawls.
 EXTRA_MODELS=""
 if [[ "$MODEL_EXPLICIT" -ne 1 ]]; then
-    RAM_GB=$(detect_ram_gb)
-    CHAT_MODEL="$(recommend_model "$RAM_GB")"
-    ok "Detected ${RAM_GB} GB unified memory → selected model: $CHAT_MODEL"
-    # On a Mac that fits gemma4:26b, also pull gemma4:31b (dense, max-quality)
-    # as a second option alongside the faster 26b MoE. ~19 GB extra.
+    if [[ "$CHATI_PLATFORM" == linux ]] && (( $(detect_vram_gb) > 0 )); then
+        VRAM_GB=$(detect_vram_gb)
+        CHAT_MODEL="$(recommend_model "$VRAM_GB")"
+        ok "Detected ${VRAM_GB} GB NVIDIA VRAM → selected model: $CHAT_MODEL"
+    else
+        RAM_GB=$(detect_ram_gb)
+        CHAT_MODEL="$(recommend_model "$RAM_GB")"
+        ok "Detected ${RAM_GB} GB memory → selected model: $CHAT_MODEL"
+    fi
+    # Where gemma4:26b is the pick (fits comfortably), also pull gemma4:31b
+    # (dense, max-quality) as a second option. ~19 GB extra.
     [[ "$CHAT_MODEL" == "gemma4:26b" ]] && EXTRA_MODELS="gemma4:31b"
 fi
 

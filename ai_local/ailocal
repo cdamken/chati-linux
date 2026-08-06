@@ -26,6 +26,25 @@ WEBUI_PROC="$OPENWEBUI_VENV/bin/open-webui serve"
 # and `/opt/homebrew/bin/ollama serve`. (ERE — pgrep/pkill -f.)
 OLLAMA_PROC='(^|[/ ])ollama serve'
 
+# --- Platform helpers (macOS + Linux) ---
+# ailocal doesn't source lib_chat.sh, so it carries its own tiny wrappers for
+# the OS-specific calls. macOS behavior is unchanged.
+_ail_is_mac() { [[ "$(uname -s)" == "Darwin" ]]; }
+# First LAN IPv4: macOS via ipconfig, Linux via hostname -I / ip route.
+_ail_lan_ip() {
+    if _ail_is_mac; then
+        ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null
+    else
+        hostname -I 2>/dev/null | awk '{print $1}' \
+            || ip -4 route get 1 2>/dev/null | awk '{print $7; exit}'
+    fi
+}
+# Open a URL in the desktop's default browser (open / xdg-open).
+_ail_open() {
+    if _ail_is_mac; then command -v open >/dev/null 2>&1 && open "$1"
+    else command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1 || true; fi
+}
+
 # --- Local SearXNG (optional 2nd web-search endpoint) ---
 # A local SearXNG on a different IP than your cloud one → round-robin in
 # chati's /web multiplies the rate-limit budget. Native install (no
@@ -224,7 +243,7 @@ startwebui() {
         if check_webui_status; then
             echo " [OK]"
             echo "OpenWebUI started successfully at http://$WEBUI_HOST:$WEBUI_PORT"
-            [[ -z "$AILOCAL_NO_OPEN" ]] && command -v open >/dev/null && open "http://$WEBUI_HOST:$WEBUI_PORT"
+            [[ -z "$AILOCAL_NO_OPEN" ]] && _ail_open "http://$WEBUI_HOST:$WEBUI_PORT"
             return 0
         fi
         sleep 1
@@ -269,8 +288,7 @@ stopwebui() {
 ollama_lan_reachable() {
     local addr found=1
     for addr in \
-        "$(ipconfig getifaddr en0 2>/dev/null)" \
-        "$(ipconfig getifaddr en1 2>/dev/null)" \
+        "$(_ail_lan_ip)" \
         "$(tailscale ip -4 2>/dev/null | head -1)"; do
         [[ -z "$addr" ]] && continue
         found=0
@@ -583,8 +601,13 @@ restore_backup() {
 
 upgrade_ollama() {
     check_dependencies
-    log "Upgrading Ollama Application via Homebrew..."
-    brew upgrade ollama >> "$UPGRADE_LOG" 2>&1 || log "Ollama app already up to date"
+    if _ail_is_mac; then
+        log "Upgrading Ollama via Homebrew..."
+        brew upgrade ollama >> "$UPGRADE_LOG" 2>&1 || log "Ollama app already up to date"
+    else
+        log "Upgrading Ollama via the official Linux installer..."
+        curl -fsSL https://ollama.com/install.sh | sh >> "$UPGRADE_LOG" 2>&1 || log "Ollama upgrade skipped/failed (see $UPGRADE_LOG)"
+    fi
     # A server that predates the new binary spawns the new runner with
     # old flags and every model load dies — always bounce.
     restart_target ollama
@@ -799,7 +822,7 @@ lan_cmd() {
             launchctl setenv OLLAMA_HOST "$host" 2>/dev/null || true
             export OLLAMA_HOST="$host"
             restart_target ollama >/dev/null 2>&1
-            ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+            ip=$(_ail_lan_ip)
             echo "🌐 Ollama LAN exposure: ON — reachable at http://${ip:-<this-mac-ip>}:11434"
             local tsn tsi; tsn=$(tailscale_dnsname); tsi=$(tailscale_ip4)
             [[ -n "$tsn" ]] && echo "   🔒 Tailscale (MagicDNS): http://$tsn:11434  (stable across IP changes)"
@@ -819,7 +842,7 @@ lan_cmd() {
             else echo "Ollama LAN exposure: OFF (localhost only)"; fi
             bind=$(lsof -nP -iTCP:11434 -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9; exit}')
             echo "  currently listening on: ${bind:-not running}"
-            ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+            ip=$(_ail_lan_ip)
             [[ -n "$ip" ]] && echo "  LAN address:          http://$ip:11434"
             local tsn tsi; tsn=$(tailscale_dnsname); tsi=$(tailscale_ip4)
             [[ -n "$tsn" ]] && echo "  Tailscale (MagicDNS): http://$tsn:11434  (stable across IP changes)"
