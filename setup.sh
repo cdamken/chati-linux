@@ -46,7 +46,14 @@ CHAT_MODEL="$DEFAULT_CHAT_MODEL"
 # RAM between CPU and GPU, so the model must leave room for the OS. gemma4:26b
 # (~17 GB) is the target on any Mac that can hold it (>=32 GB); smaller Macs
 # get progressively lighter models so setup never picks something that won't run.
-detect_ram_gb() { echo $(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 )); }
+detect_ram_gb() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        echo $(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
+    else
+        # Linux: /proc/meminfo MemTotal is in kB.
+        echo $(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1048576 ))
+    fi
+}
 recommend_model() {
     local gb="$1"
     if   (( gb >= 32 )); then echo "gemma4:26b"                  # ~17 GB — the default target

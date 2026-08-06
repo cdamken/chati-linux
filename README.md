@@ -2,7 +2,9 @@
 
 An Ollama-centric, high-performance chat interface for the command line, with local AI service management and OpenWebUI integration.
 
-![version](https://img.shields.io/badge/version-1.18.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS-lightgrey)
+![version](https://img.shields.io/badge/version-1.18.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+
+> **chati-linux** (this fork) is porting chati to Ubuntu/Linux while keeping macOS working (cross-platform via OS detection). Tracking: [#1](../../issues/1) · upstream: [cdamken/chati#30](https://github.com/cdamken/chati/issues/30).
 
 ## ⚡ Quick Start (macOS)
 

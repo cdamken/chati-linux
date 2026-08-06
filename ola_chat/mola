@@ -28,9 +28,9 @@ list_session_files() {
         files+=("$f")
     done
     [[ ${#files[@]} -eq 0 ]] && return 0
-    # Sort by mtime (newest first) via stat
+    # Sort by mtime (newest first). file_mtime is portable (BSD/GNU stat).
     printf '%s\n' "${files[@]}" \
-        | xargs -I{} stat -f '%m %N' {} 2>/dev/null \
+        | while IFS= read -r f; do printf '%s %s\n' "$(file_mtime "$f")" "$f"; done \
         | sort -rn \
         | awk '{$1=""; sub(/^ /,""); print}' \
         | while IFS= read -r path; do basename "$path"; done
@@ -301,7 +301,7 @@ rename_conversation() {
     local timestamp
     timestamp=$(echo "$target_sess" | grep -oE "[0-9]{8}_[0-9]{4}" | head -1)
     if [[ -z "$timestamp" ]]; then
-        timestamp=$(stat -f %Sm -t %Y%m%d_%H%M "$HISTORY_DIR/$target_sess" 2>/dev/null)
+        timestamp=$(fmt_mtime "$HISTORY_DIR/$target_sess" 2>/dev/null)
     fi
     [[ -z "$timestamp" ]] && timestamp=$(date +%Y%m%d_%H%M)
 
