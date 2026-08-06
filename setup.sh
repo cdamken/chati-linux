@@ -62,13 +62,18 @@ recommend_model() {
     else                      echo "$DEFAULT_CHAT_MODEL"; fi     # detection failed → fallback
 }
 
-# NVIDIA VRAM in GB (0 if no nvidia-smi / no GPU). On Linux the model must fit
-# VRAM, not system RAM — a 62 GB box with a 16 GB GPU should NOT default to a
-# 17 GB model (it would spill to CPU and crawl). Ollama sizing tracks VRAM here.
+# Total NVIDIA VRAM in GB across ALL cards (0 if no nvidia-smi / no GPU). On
+# Linux the model must fit VRAM, not system RAM: a 62 GB box with a 16 GB GPU
+# should NOT default to a 17 GB model (it would spill to CPU and crawl). Works
+# for any NVIDIA setup, no card-specific assumptions: nvidia-smi prints one line
+# per GPU and we SUM them, because Ollama can split a model across several cards.
+# (AMD/ROCm not handled yet, NVIDIA only per the request.)
 detect_vram_gb() {
     command -v nvidia-smi >/dev/null 2>&1 || { echo 0; return; }
-    local mib; mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
-    [[ -n "$mib" ]] && echo $(( mib / 1024 )) || echo 0
+    local mib
+    mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
+          | tr -dc '0-9\n' | awk '{s+=$1} END{print s+0}')
+    [[ -n "$mib" && "$mib" -gt 0 ]] && echo $(( mib / 1024 )) || echo 0
 }
 
 # ---- Pretty output helpers ---------------------------------------------------
