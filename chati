@@ -837,13 +837,13 @@ detect_ocrable_in_history() {
     [[ -f "$MESSAGES_FILE" ]] || return 0
     command -v jq >/dev/null 2>&1 || return 0
     local content found
-    # Most-recent user turns first (tail -r reverses); stop at the first hit.
+    # Most-recent user turns first (reverse_lines is portable); stop at first hit.
     while IFS= read -r content; do
         [[ -z "$content" ]] && continue
         found=$(detect_ocrable_in_msg "$content")
         if [[ -n "$found" ]]; then printf '%s\n' "$found"; return 0; fi
     done < <(jq -r 'select(.role=="user") | .content' "$MESSAGES_FILE" 2>/dev/null \
-                | tail -n 12 | tail -r)
+                | tail -n 12 | reverse_lines)
 }
 
 # Internal 'ocr': OCR one file, a folder of files, or a glob, then send

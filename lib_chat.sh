@@ -335,6 +335,9 @@ fmt_mtime() {
     if [[ "$(uname -s)" == "Darwin" ]]; then date -r "$e" +%Y%m%d_%H%M
     else date -d "@$e" +%Y%m%d_%H%M; fi
 }
+# Reverse the lines of stdin. Portable: macOS has `tail -r`, GNU has `tac`, so
+# neither is guaranteed — awk works on both.
+reverse_lines() { awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }'; }
 
 # Fine-tuning / training log (#12): append ONE JSONL record per user turn —
 # the instruction, the context essence actually sent to the model, and the
