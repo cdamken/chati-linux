@@ -348,16 +348,32 @@ dedup_queries() {
 # is available (so the decision is near-instant), with no per-machine
 # config needed; WEB_ROUTER_MODEL still overrides it.
 web_query_needs_search() {
-    local query="$1"
+    local query="$1" agent_on="${2:-}"
     local model
     model=$(router_model)
     local timeout="${WEB_ROUTER_TIMEOUT:-30}"
 
+    # When Agent Mode is on the user can run local commands, so a "do X on my
+    # machine/files" request is a LOCAL action, not a web query (#33).
+    local agent_note=""
+    if [[ "$agent_on" == "ON" || "$agent_on" == "1" ]]; then
+        agent_note="
+The user is in AGENT mode: they can run commands on their own computer (organize/move/read files, run tools). Treat a request to DO something on the machine or its files as a LOCAL ACTION → DIRECT, unless it must fetch something from the internet."
+    fi
+
     local prompt="You are a router that decides whether a user message needs a LIVE WEB SEARCH to be answered well.
 
-Answer SEARCH if answering needs fresh, real-time, or external facts: current events, news, weather, prices, stock/financial figures, sports scores, release dates, live status, or anything tied to 'today'/'now'/'latest'/'current', or specific recent data a language model likely does not know.
+Answer SEARCH if answering needs fresh, real-time, or external facts: current events, news, weather, prices, stock/financial figures, sports scores, release dates, live status, or anything tied to 'today'/'now'/'latest'/'current', or specific recent data a language model likely does not know. ALSO answer SEARCH if the task must FETCH something from the internet (download an image, file, or web page), even when the result is then saved locally.
 
-Answer DIRECT if a language model can answer from its own knowledge: jokes, creative writing, code, explanations, definitions, math, translation, rewriting or summarizing text the user gave, opinions, and general or historical knowledge.
+Answer DIRECT if a language model can answer from its own knowledge (jokes, creative writing, code, explanations, definitions, math, translation, rewriting or summarizing text the user gave, opinions, general or historical knowledge), OR if the request is an ACTION on the user's OWN computer or files that needs no external data: organizing a folder, moving/renaming/reading local files, running a local command, inspecting the system.
+$agent_note
+Examples:
+- \"organize my Downloads into folders by type\" -> DIRECT (local action)
+- \"read ~/contract.pdf and summarize it\" -> DIRECT (local file)
+- \"move all the invoices to a Facturas folder\" -> DIRECT (local action)
+- \"download cat images into ~/Downloads\" -> SEARCH (must fetch from the web)
+- \"latest USD/EUR exchange rate\" -> SEARCH (fresh data)
+- \"write a haiku about the sea\" -> DIRECT
 
 Reply with ONLY one word: SEARCH or DIRECT.
 
@@ -437,7 +453,8 @@ STRICT RULES:
 2. 3 to 8 keywords each. NO question marks. NO full sentences. Think like someone typing into a search box.
 3. If the request centers on one clear subject (a company, a person, a ticker), include that subject in every query — verbatim, do not drop or abbreviate it (e.g. \"3M\", not \"M\").
 4. Each query targets a DIFFERENT data point or a different one of the resolved items.
-5. Respond with ONLY the queries, one per line, no numbering, no bullets, no commentary.
+5. PRESERVE NAMES EXACTLY. Copy every proper noun, brand/product name, domain, username, ticker or technical term character-for-character — NEVER translate, transliterate, spell-\"correct\", or localize them (e.g. keep \"claude.ai\" as \"claude.ai\", never \"claudia\"; keep \"PostgreSQL\", never \"Postgres SQL\").
+6. Respond with ONLY the queries, one per line, no numbering, no bullets, no commentary.
 
 Example — context says the conversation is about Kenya, Uganda and Burundi, and the request is \"current presidents of those countries\":
 Kenya current president 2026
@@ -446,7 +463,7 @@ Burundi current president 2026
 
 User request: $query"
     else
-        prompt="Break the following user question into up to $max_subs short web search queries (3-8 keywords each, NO question marks, NO full sentences — think search box, not chatbot). Respond with ONLY the queries, one per line. No numbering, no bullets, no commentary. If the question is already a single concise lookup, return just the original.
+        prompt="Break the following user question into up to $max_subs short web search queries (3-8 keywords each, NO question marks, NO full sentences — think search box, not chatbot). PRESERVE NAMES EXACTLY: copy every proper noun, brand/product name, domain, username or ticker character-for-character — never translate, transliterate or spell-\"correct\" them (e.g. keep \"claude.ai\" as \"claude.ai\", never \"claudia\"). Respond with ONLY the queries, one per line. No numbering, no bullets, no commentary. If the question is already a single concise lookup, return just the original.
 
 Question: $query"
     fi
@@ -458,9 +475,14 @@ Question: $query"
     fi
     local subs
     subs=$(printf '%s\n' "$content" | clean_subqueries "$max_subs")
-    if [[ -z "$subs" ]]; then
+    # Always search the user's ORIGINAL query verbatim too, as a safety net: the
+    # decomposer (a small model) sometimes mangles a proper noun / brand / domain
+    # — e.g. \"claude.ai\" → \"claudia ai\" (#29). Prepend the original and dedup
+    # (case-insensitively) so the real terms are searched even if a subquery
+    # drifted. Capped to \$max_subs.
+    {
         printf '%s\n' "$query"
-    else
-        printf '%s\n' "$subs"
-    fi
+        [[ -n "$subs" ]] && printf '%s\n' "$subs"
+    } | awk '{ key=tolower($0); sub(/^[ \t]+/,"",key); sub(/[ \t]+$/,"",key) } NF && !seen[key]++' \
+      | head -n "$max_subs"
 }

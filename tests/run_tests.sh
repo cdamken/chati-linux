@@ -236,9 +236,9 @@ test_chati_help_documents_aliases() {
     out=$(awk '/^show_help\(\) \{/,/^}$/' "$PROJECT_DIR/chati")
     assert_match "$out" "/talk +\(/t\)" "/talk alias" \
         && assert_match "$out" "/web +\(/w\)" "/web alias" \
-        && assert_match "$out" "/agent +\(/a\)" "/agent alias" \
+        && assert_match "$out" "/shell +\(/s\)" "/shell alias" \
         && assert_match "$out" "/file +\(/f\)" "/file alias" \
-        && assert_match "$out" "/batch +\(/s\)" "/batch alias"
+        && assert_match "$out" "/batch +\(/b\)" "/batch alias"
 }
 run_test "chati help documents word+alias standard" test_chati_help_documents_aliases
 
@@ -247,12 +247,35 @@ test_chati_dispatch_has_long_forms() {
     local dispatch
     dispatch=$(sed -n '/case "\$cmd_name" in/,/esac/p' "$PROJECT_DIR/chati")
     assert_match "$dispatch" "/file\|/f\)" "/file|/f arm" \
-        && assert_match "$dispatch" "/batch\|/s\)" "/batch|/s arm" \
+        && assert_match "$dispatch" "/batch\|/b\)" "/batch|/b arm" \
         && assert_match "$dispatch" "/talk\|/t\)" "/talk|/t arm" \
         && assert_match "$dispatch" "/web\|/w\)" "/web|/w arm" \
-        && assert_match "$dispatch" "/agent\|/a\)" "/agent|/a arm"
+        && assert_match "$dispatch" "/shell\|/s" "/shell|/s arm" \
+        && assert_match "$dispatch" "/ollama\|/endpoint\)" "/ollama arm" \
+        && assert_match "$dispatch" "/host\)" "/host arm"
 }
 run_test "chati dispatcher accepts long and short forms" test_chati_dispatch_has_long_forms
+
+test_shell_mode_rename_retires_old_names() {
+    # Shell Mode: /shell,/s,/sY are the ONLY working commands. The old /agent,
+    # /a, /aY are RETIRED (#47) — they must NOT toggle anything, just point to
+    # the new name (so a reflex /aY can't arm auto-accept).
+    local dispatch
+    dispatch=$(sed -n '/case "\$cmd_name" in/,/esac/p' "$PROJECT_DIR/chati")
+    assert_match "$dispatch" "/shell\|/s\)" "/shell|/s arm present" || return 1
+    assert_match "$dispatch" "/sY\)" "/sY arm present" || return 1
+    assert_match "$dispatch" "/agent\|/a\|/aY\)" "old names have a retired-notice arm" || return 1
+    # The old names must NOT sit on the active toggle arm anymore.
+    if printf '%s' "$dispatch" | grep -qE '/shell\|/s\|/agent'; then
+        echo "/agent,/a still wired to the active Shell toggle" >&2; return 1
+    fi
+    if printf '%s' "$dispatch" | grep -qE '/sY\|/aY'; then
+        echo "/aY still wired to the active auto-accept toggle" >&2; return 1
+    fi
+    local settings; settings=$(awk '/^show_settings\(\) \{/,/^}$/' "$PROJECT_DIR/chati")
+    assert_match "$settings" "Shell:" "settings shows Shell"
+}
+run_test "Shell Mode: /agent,/a,/aY retired (do not toggle) (#47)" test_shell_mode_rename_retires_old_names
 
 if [[ "${FAST:-0}" == "1" ]]; then
     phase "FAST mode: skipping phases 2 + 3"
@@ -281,6 +304,10 @@ export BASE_DIR="$SANDBOX"
 # Keep the checkout-independent data home inside the sandbox too (1.10+), so the
 # derived STATE_DIR / mkdir never touch the real ~/.local/share during tests.
 export CHATI_DATA_HOME="$SANDBOX"
+# Pin the instance so tests never auto-derive one from the tty (#37).
+export CHATI_INSTANCE="test"
+# Keep test logging out of the user's real ~/logs/chati.log.
+export LOG_FILE="$SANDBOX/chati.log"
 export OLA_DIR="$SANDBOX/ola_chat"
 export DOCR_DIR="$SANDBOX/docr"
 export HISTORY_DIR="$SANDBOX/conversation_histories"
@@ -474,6 +501,20 @@ test_clean_subqueries_caps_at_max() {
     assert_eq "$n" "2" "line cap"
 }
 run_test "clean_subqueries caps output at max lines" test_clean_subqueries_caps_at_max
+
+# --- decompose_query always searches the original query verbatim (#29) ---
+test_decompose_keeps_original_query() {
+    # The decomposer (a small model) sometimes mangles a proper noun/domain
+    # ("claude.ai" → "claudia ai"). The original query must still be searched.
+    ollama_chat_oneshot() { printf 'claudia ai error\nconexion claudia ai problema\n'; }
+    decompose_model() { echo "stub-model"; }
+    local r; r=$(decompose_query "no me conecto a claude.ai")
+    printf '%s\n' "$r" | grep -qi 'claude\.ai' \
+        || { echo "original query with claude.ai was dropped" >&2; return 1; }
+    [[ "$(printf '%s\n' "$r" | head -n1)" == "no me conecto a claude.ai" ]] \
+        || { echo "original query should be searched first" >&2; return 1; }
+}
+run_test "decompose_query always searches the original query (#29)" test_decompose_keeps_original_query
 
 # --- format_search_results (SearXNG JSON → LLM text block) ---
 test_format_results_fixture() {
@@ -684,6 +725,67 @@ test_decompose_model_picks_mid_model() {
 }
 run_test "decompose_model prefers an installed mid model, else active_model" test_decompose_model_picks_mid_model
 
+# --- compress_model: light model for background compaction/titling (#35) ---
+test_compress_model_override() {
+    local r; r=$(COMPRESS_MODEL="tiny:1b" compress_model)
+    assert_eq "$r" "tiny:1b" "COMPRESS_MODEL override is honoured"
+}
+run_test "compress_model honours COMPRESS_MODEL override" test_compress_model_override
+
+# --- resolve_ollama_api: external Ollama endpoint (#39) ---
+test_resolve_ollama_api() {
+    assert_eq "$(resolve_ollama_api '' '')"                  "http://localhost:11434"                  "empty -> localhost" || return 1
+    assert_eq "$(resolve_ollama_api '' 'box:11434')"         "http://box:11434"                        "host:port -> url" || return 1
+    assert_eq "$(resolve_ollama_api '' 'box')"               "http://box:11434"                        "bare host -> +default port" || return 1
+    assert_eq "$(resolve_ollama_api '' '0.0.0.0:11434')"     "http://localhost:11434"                  "0.0.0.0 bind -> localhost" || return 1
+    assert_eq "$(resolve_ollama_api '' 'http://box:9')"      "http://box:9"                            "scheme kept" || return 1
+    assert_eq "$(resolve_ollama_api 'http://x:1' 'box:2')"   "http://x:1"                              "explicit OLLAMA_API wins"
+}
+run_test "resolve_ollama_api derives the endpoint from OLLAMA_HOST" test_resolve_ollama_api
+
+# --- per-terminal model with global fallback (#37 part 2) ---
+test_active_model_two_tier() {
+    local gi="$SANDBOX/gm.txt" pi="$SANDBOX/pi.txt"
+    echo "global:1b" > "$gi"; : > "$pi"     # per-instance empty
+    local r; r=$(ACTIVE_MODEL_FILE="$pi" GLOBAL_MODEL_FILE="$gi" active_model)
+    assert_eq "$r" "global:1b" "empty per-instance falls back to GLOBAL model" || return 1
+    echo "inst:2b" > "$pi"
+    r=$(ACTIVE_MODEL_FILE="$pi" GLOBAL_MODEL_FILE="$gi" active_model)
+    assert_eq "$r" "inst:2b" "per-instance model wins over global"
+}
+run_test "active_model: per-terminal choice with global fallback" test_active_model_two_tier
+
+# --- per-session settings persistence (#37) ---
+eval "$(awk '/^CHATI_SETTINGS_KEYS=/,/\)/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^ansi_color\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^update_say_rate\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^settings_write\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^settings_read\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+
+test_session_settings_roundtrip() {
+    local f="$SANDBOX/A_settings"
+    FORCE_LANG=es WEB_MODE=ON THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=OFF \
+        VOICE_MODE=OFF DEFAULT_VOICE=Paulina SAY_SPEED=1.5 SAY_COLORS=white/green \
+        USER_COLOR_NAME=cyan AI_COLOR_NAME=green
+    settings_write "$f"
+    FORCE_LANG=auto WEB_MODE=OFF AGENT_MODE=OFF SAY_SPEED=1.0 AI_COLOR_NAME=default
+    settings_read "$f" || { echo "settings_read failed" >&2; return 1; }
+    assert_eq "$FORCE_LANG" "es" "lang restored" \
+        && assert_eq "$WEB_MODE" "ON" "web restored" \
+        && assert_eq "$AGENT_MODE" "ON" "shell restored" \
+        && assert_eq "$SAY_SPEED" "1.5" "speed restored" \
+        && assert_eq "$AI_COLOR_NAME" "green" "ai color restored"
+}
+run_test "per-session settings round-trip (write then read)" test_session_settings_roundtrip
+
+test_settings_is_a_companion() {
+    case " ${SESSION_COMPANION_SUFFIXES[*]} " in
+        *" _settings "*) : ;;
+        *) echo "_settings missing from SESSION_COMPANION_SUFFIXES" >&2; return 1 ;;
+    esac
+}
+run_test "_settings travels with rename/delete (companion suffix)" test_settings_is_a_companion
+
 # --- web_query_needs_search router (failure-safe default) ---
 test_router_defaults_to_search() {
     # The critical safety property: on ANY failure (here, a model that
@@ -697,6 +799,18 @@ test_router_defaults_to_search() {
     assert_eq "$r" "SEARCH" "failure must default to SEARCH"
 }
 run_test "web_query_needs_search defaults to SEARCH on failure" test_router_defaults_to_search
+
+test_router_parses_and_takes_agent_arg() {
+    # Plumbing (semantics are the model's job, tested live): the router accepts
+    # the agent-mode 2nd arg (#33) and parses the model's reply either way.
+    ollama_chat_oneshot() { echo "DIRECT"; }
+    local r; r=$(web_query_needs_search "organiza mi carpeta" "ON")
+    assert_eq "$r" "DIRECT" "explicit DIRECT reply honoured, agent arg accepted" || return 1
+    ollama_chat_oneshot() { echo "SEARCH please"; }
+    r=$(web_query_needs_search "precio de apple hoy" "OFF")
+    assert_eq "$r" "SEARCH" "anything not-DIRECT -> SEARCH"
+}
+run_test "web_query_needs_search parses reply and takes the agent arg (#33)" test_router_parses_and_takes_agent_arg
 
 # --- ollama_running probe ---
 test_ollama_running_returns_boolean() {

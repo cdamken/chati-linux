@@ -56,6 +56,20 @@ export CHATI_INSTANCE="${CHATI_INSTANCE:-}"
 export CHATI_DATA_HOME="${CHATI_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/chati}"
 mkdir -p "$CHATI_DATA_HOME" 2>/dev/null
 
+# Per-terminal isolation (#37): with no explicit CHATI_INSTANCE, derive one from
+# the controlling terminal, so each window/pane keeps its OWN active session,
+# live buffer and model — two terminals no longer clobber each other. The tty
+# name is stable, so the SAME terminal resumes its state across relaunches; a
+# different terminal is independent. Falls back to the shared instance when
+# there is no tty (pipes, scripts, the test harness), so non-interactive use and
+# tests are unchanged. Set CHATI_INSTANCE explicitly to name it yourself.
+if [[ -z "$CHATI_INSTANCE" ]]; then
+    _tty=$(tty 2>/dev/null)
+    [[ "$_tty" == /dev/* ]] && CHATI_INSTANCE="tty-$(printf '%s' "${_tty#/dev/}" | tr -c 'A-Za-z0-9_-' '_')"
+    unset _tty
+fi
+export CHATI_INSTANCE
+
 if [[ -n "$CHATI_INSTANCE" ]]; then
     _chati_inst=$(printf '%s' "$CHATI_INSTANCE" | tr -c 'A-Za-z0-9_-' '_')
     export STATE_DIR="$CHATI_DATA_HOME/instances/$_chati_inst"
@@ -64,7 +78,12 @@ else
 fi
 mkdir -p "$STATE_DIR" 2>/dev/null
 
-export ACTIVE_MODEL_FILE="${ACTIVE_MODEL_FILE:-$CHATI_DATA_HOME/.active_ollama_model.txt}"
+# Model choice is per-instance (per terminal) so /model in one window doesn't
+# change another; a terminal with no choice yet falls back to the GLOBAL default
+# below (your usual model), then to DEFAULT_MODEL. When there's no instance
+# (shared), both paths are the same file — identical to the old behavior.
+export GLOBAL_MODEL_FILE="${GLOBAL_MODEL_FILE:-$CHATI_DATA_HOME/.active_ollama_model.txt}"
+export ACTIVE_MODEL_FILE="${ACTIVE_MODEL_FILE:-$STATE_DIR/.active_ollama_model.txt}"
 export MESSAGES_FILE="${MESSAGES_FILE:-$STATE_DIR/.messages.active.ola.txt}"
 export ACTIVE_FILE="${ACTIVE_FILE:-$MESSAGES_FILE}"
 export HISTORY_DIR="${HISTORY_DIR:-$CHATI_DATA_HOME/conversation_histories}"
@@ -95,7 +114,92 @@ export OLA_MODEL_CMD="${OLA_MODEL_CMD:-$OLA_DIR/ola_model}"
 export DOCR_CMD="${DOCR_CMD:-$DOCR_DIR/docr}"
 
 # --- OLLAMA ---
-export OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
+# Resolve the Ollama endpoint URL (#39 — use an external/more powerful Ollama).
+# Priority: an explicit OLLAMA_API wins; else derive it from OLLAMA_HOST — the
+# same var the `ollama` CLI reads, so chat (curl) AND model list/pull/`/model`
+# all hit the same box; else localhost. Normalizes a bare host (adds :11434), a
+# scheme-less host (adds http://), and treats a 0.0.0.0 bind as localhost for
+# the client (that value is a server bind, e.g. from `ailocal lan on`).
+resolve_ollama_api() {
+    local api="${1:-}" host="${2:-}"
+    if [[ -n "$api" ]]; then printf '%s\n' "$api"; return 0; fi
+    if [[ -n "$host" ]]; then
+        if [[ "$host" == http://* || "$host" == https://* ]]; then
+            printf '%s\n' "${host//0.0.0.0/localhost}"; return 0
+        fi
+        [[ "$host" != *:* ]] && host="$host:11434"
+        printf 'http://%s\n' "${host//0.0.0.0/localhost}"; return 0
+    fi
+    printf 'http://localhost:11434\n'
+}
+export OLLAMA_API="$(resolve_ollama_api "${OLLAMA_API:-}" "${OLLAMA_HOST:-}")"
+
+# Print reachable Ollama endpoints as "URL<TAB>version", one per line: localhost
+# plus online Tailscale peers on :11434. Powers the `/ollama` discovery picker.
+discover_ollama_endpoints() {
+    local port="${OLLAMA_DISCOVER_PORT:-11434}" host ver u seen=","
+    local -a cands=(localhost)
+    if command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        while IFS= read -r host; do [[ -n "$host" ]] && cands+=("$host"); done < <(
+            tailscale status --json 2>/dev/null \
+              | jq -r '([.Self] + ((.Peer // {}) | to_entries | map(.value)))[]
+                       | select(.Online == true) | (.DNSName // "") | sub("\\.$";"")' 2>/dev/null \
+              | grep -v '^$')
+    fi
+    for host in "${cands[@]}"; do
+        [[ "$seen" == *",$host,"* ]] && continue
+        seen="$seen$host,"
+        u="http://$host:$port"
+        ver=$(curl -fsS --max-time 2 "$u/api/version" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+        [[ -n "$ver" ]] && printf '%s\t%s\n' "$u" "$ver"
+    done
+}
+
+# Remembered Ollama servers you've switched to before (one host:port per line),
+# so /ollama can offer them again even while they're asleep. Multiple servers
+# are supported — the file just accumulates them (deduped). localhost is never
+# saved (it's always implied).
+KNOWN_OLLAMA_HOSTS_FILE="${KNOWN_OLLAMA_HOSTS_FILE:-$CHATI_DATA_HOME/ollama_hosts}"
+remember_ollama_host() {
+    local h="$1"
+    h="${h#http://}"; h="${h#https://}"; h="${h%/}"
+    [[ -z "$h" || "$h" == localhost:* || "$h" == 127.0.0.1:* ]] && return 0
+    mkdir -p "$(dirname "$KNOWN_OLLAMA_HOSTS_FILE")" 2>/dev/null
+    grep -qxF "$h" "$KNOWN_OLLAMA_HOSTS_FILE" 2>/dev/null && return 0
+    printf '%s\n' "$h" >> "$KNOWN_OLLAMA_HOSTS_FILE"
+}
+forget_ollama_host() {   # remove one saved host (exact host:port), used by /ollama forget
+    local h="$1"; h="${h#http://}"; h="${h#https://}"; h="${h%/}"
+    [[ -f "$KNOWN_OLLAMA_HOSTS_FILE" ]] || return 0
+    local t; t=$(mktemp); grep -vxF "$h" "$KNOWN_OLLAMA_HOSTS_FILE" > "$t" 2>/dev/null; mv "$t" "$KNOWN_OLLAMA_HOSTS_FILE"
+}
+
+# Print "URL<TAB>version|OFFLINE" for every candidate endpoint: localhost, online
+# Tailscale peers, AND every remembered server (deduped). Reachable ones show
+# their version; saved-but-down ones show OFFLINE so you can still pick them.
+ollama_endpoints_status() {
+    local port="${OLLAMA_DISCOVER_PORT:-11434}" host u ver seen=","
+    local -a urls=("http://localhost:$port")
+    if command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        while IFS= read -r host; do [[ -n "$host" ]] && urls+=("http://$host:$port"); done < <(
+            tailscale status --json 2>/dev/null \
+              | jq -r '([.Self] + ((.Peer // {}) | to_entries | map(.value)))[]
+                       | select(.Online == true) | (.DNSName // "") | sub("\\.$";"")' 2>/dev/null \
+              | grep -v '^$')
+    fi
+    if [[ -f "$KNOWN_OLLAMA_HOSTS_FILE" ]]; then
+        while IFS= read -r host; do
+            [[ -z "$host" ]] && continue
+            case "$host" in http://*|https://*) urls+=("$host") ;; *) urls+=("http://$host") ;; esac
+        done < "$KNOWN_OLLAMA_HOSTS_FILE"
+    fi
+    for u in "${urls[@]}"; do
+        [[ "$seen" == *",$u,"* ]] && continue
+        seen="$seen$u,"
+        ver=$(curl -fsS --max-time 2 "$u/api/version" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+        printf '%s\t%s\n' "$u" "${ver:-OFFLINE}"
+    done
+}
 # Single source of truth for the default model. Override via the env if
 # you want a different fallback when no $ACTIVE_MODEL_FILE exists yet.
 export DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:26b}"
@@ -117,6 +221,11 @@ export MAX_COMPRESS_CHARS="${MAX_COMPRESS_CHARS:-10000}"
 # curl timeouts in seconds. Long for streaming chat, short for meta calls.
 export OLA_CURL_TIMEOUT="${OLA_CURL_TIMEOUT:-600}"
 export OLA_CURL_META_TIMEOUT="${OLA_CURL_META_TIMEOUT:-60}"
+# Stall guard for streaming: abort if the model sends effectively nothing
+# (<1 byte/s) for this many seconds, instead of waiting out OLA_CURL_TIMEOUT.
+# Catches a wedged/cold-loading big model or a sleeping host in minutes, not
+# 10+ min of 0 bytes (#35). Generous enough not to kill a slow cold load.
+export OLA_STALL_TIMEOUT="${OLA_STALL_TIMEOUT:-300}"
 # Web search scratch dir. chati's do_web_research creates a fresh
 # `turn.XXXXXX` subdir here per turn (mktemp -d) and wipes it after the
 # answer lands. Nothing else persists, so there's no TTL knob anymore.
@@ -457,13 +566,16 @@ ollama_running() {
 #   3. Nothing installed / ollama down: return the configured default name
 #      so any resulting error at least names a model.
 active_model() {
+    local m
     if [[ -s "$ACTIVE_MODEL_FILE" ]]; then
-        local m
         m=$(cat "$ACTIVE_MODEL_FILE" 2>/dev/null)
-        if [[ -n "$m" ]]; then
-            printf '%s\n' "$m"
-            return 0
-        fi
+        [[ -n "$m" ]] && { printf '%s\n' "$m"; return 0; }
+    fi
+    # Per-terminal file empty → fall back to the GLOBAL model choice (#37), so a
+    # fresh terminal starts on your usual model. (Same file when not per-instance.)
+    if [[ -s "$GLOBAL_MODEL_FILE" && "$GLOBAL_MODEL_FILE" != "$ACTIVE_MODEL_FILE" ]]; then
+        m=$(cat "$GLOBAL_MODEL_FILE" 2>/dev/null)
+        [[ -n "$m" ]] && { printf '%s\n' "$m"; return 0; }
     fi
     local installed
     installed=$(ollama list 2>/dev/null | tail -n +2 | awk 'NF{print $1}')
@@ -481,6 +593,22 @@ active_model() {
         return 0
     fi
     printf '%s\n' "$DEFAULT_MODEL"
+}
+
+# Model for BACKGROUND meta tasks — memory compaction and auto-titling. These
+# must NOT use the big answer model: a 26B/31B cold-loading behind the chat
+# turn made compaction time out (exit 28) and silently drop the summary (#35).
+# Prefer a small installed chat model (fast, no GPU contention); fall back to
+# the active model only if nothing lighter is installed. COMPRESS_MODEL overrides.
+COMPRESS_PREFERENCES=("llama3.1:8b-instruct-q8_0" "llama3.1:8b" "gemma3:4b" "gemma4:e4b" "qwen2.5:7b")
+compress_model() {
+    if [[ -n "${COMPRESS_MODEL:-}" ]]; then printf '%s\n' "$COMPRESS_MODEL"; return 0; fi
+    local installed m
+    installed=$(ollama list 2>/dev/null | tail -n +2 | awk 'NF{print $1}')
+    for m in "${COMPRESS_PREFERENCES[@]}"; do
+        printf '%s\n' "$installed" | grep -qxF "$m" && { printf '%s\n' "$m"; return 0; }
+    done
+    active_model
 }
 
 # Preferred lightweight models for quick triage decisions (the /web
@@ -530,7 +658,7 @@ session_msg_count() {
 # Companion file suffixes that travel with a session file. Update this
 # list and every site that manages sessions (rename/delete/autorename
 # cleanup) picks up the change automatically.
-SESSION_COMPANION_SUFFIXES=(_prompt _summary _compressed_at)
+SESSION_COMPANION_SUFFIXES=(_prompt _summary _compressed_at _settings)
 
 # Remove a session file and all its companions. Safe to call on a
 # nonexistent base file.

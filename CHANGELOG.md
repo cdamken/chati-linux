@@ -7,6 +7,181 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.25.3] - 2026-08-07
+
+### Fixed
+- **Ctrl-C no longer quits chati — it interrupts the current turn and returns
+  to the prompt.** With no INT trap in the main REPL, pressing Ctrl-C while the
+  model was streaming killed the foreground `ola` and the signal propagated up,
+  terminating the whole session. Now a main-shell trap catches SIGINT: it stops
+  the in-flight generation (or a pending Shell-mode command / confirmation) and
+  drops you back to `> `. The prompt reprints on Ctrl-C at idle; Ctrl-D (EOF)
+  still exits cleanly. The `/batch` cancel handler was restoring `trap - INT`
+  (uncaught) on finish — it now reinstalls the main-loop handler so the next
+  Ctrl-C after a batch is still caught.
+
+## [1.25.2] - 2026-08-07
+
+### Changed
+- **Retired the old Shell-mode names `/agent`, `/a`, `/aY` (#47).** After the
+  1.19.0 rename to Shell, they were kept as aliases; now they no longer do
+  anything except point you to the new command. This matters most for `/aY`: a
+  reflex keystroke can no longer arm auto-accept — it just prints
+  `ℹ️ '/aY' was renamed. Use /shell (/s)… /sY for auto-accept.` The working
+  commands are `/shell` (`/s`) and `/sY`.
+
+## [1.25.1] - 2026-08-07
+
+### Changed
+- **Friendlier first-launch message per terminal.** A brand-new terminal (its
+  own tty, no session yet) used to greet you with a scary `⚠️ Current session
+  missing. Starting a new one...` — it isn't missing, it's just your first one.
+  Now it says `✨ Starting a new session…`. The `⚠️` warning is kept only for the
+  real case: an active session whose file was actually deleted/moved. `/settings`
+  also shows `(new — none yet)` instead of the literal `active` before the first
+  session exists.
+
+## [1.25.0] - 2026-08-07
+
+### Changed
+- **Per-terminal isolation by default (#37, part 2).** With no explicit
+  `CHATI_INSTANCE`, chati now derives one from the controlling terminal (tty),
+  so each window/pane keeps its OWN active session, live buffer and model — two
+  terminals no longer clobber each other's session or model. The same terminal
+  resumes its state across relaunches; a different terminal is independent (it
+  starts fresh — your saved sessions are still shared, reachable with
+  `/switch`). Falls back to the shared instance when there's no tty (pipes,
+  scripts, tests), so non-interactive use is unchanged. **Model is now
+  per-terminal** (`/model` in one window doesn't change another), falling back
+  to the global default (your usual model) when a terminal hasn't chosen one.
+
+## [1.24.0] - 2026-08-07
+
+### Added
+- **Per-session settings + editable global defaults (#37, part 1).** Your
+  toggles now travel WITH the session: `/lang`, `/web`, `/think`, Shell (`/s`,
+  `/sY`), Talk/`/voice`/`/speed`, and the chat/TTS colors are saved when you
+  leave or `/switch` a session (and at exit), and restored when you come back —
+  so each conversation keeps its own config instead of losing it on exit. A NEW
+  session inherits the **global defaults**: `/defaults save` snapshots the
+  current settings as that default, `/defaults` shows them, `/defaults clear`
+  resets. Settings live in a `${session}_settings` companion (renamed/deleted
+  with the session). (Per-terminal TTY isolation and per-session *model* are
+  part 2, still tracked in #37.)
+
+## [1.23.0] - 2026-08-07
+
+### Added
+- **Remembered Ollama servers + auto-fallback to localhost (#39 follow-up).**
+  - Every server you switch to (via `/host` or `/ollama <addr>`) is **saved** to
+    `~/.local/share/chati/ollama_hosts`, so `/ollama` lists it again later even
+    while it's asleep (shown as `saved, offline` but still pickable). Multiple
+    servers are supported; drop one with `/ollama forget <n|host>`. localhost is
+    never saved (always implied).
+  - **Auto-fallback:** if the remote Ollama you're pointed at goes away
+    mid-session (asleep, off-network), chati drops back to **localhost**
+    automatically (only when localhost actually answers) and re-picks a valid
+    local model, so you're never stuck. Disable with `CHATI_OLLAMA_FALLBACK=0`.
+
+## [1.22.1] - 2026-08-07
+
+### Docs
+- **Clarified that the remote-Ollama endpoint is not Tailscale-only.** `/host`,
+  `/ollama <addr>` and `OLLAMA_HOST` accept ANY reachable address (a LAN IP like
+  `192.168.1.50:11434`, a hostname, or a Tailscale name). Only `/ollama`'s
+  auto-discovery is Tailscale-based (it scans localhost + Tailscale peers); you
+  can always point at a plain LAN IP by hand. Updated `.env.example`, the README
+  note, and the `/ollama` empty-list hint.
+
+## [1.22.0] - 2026-08-07
+
+### Added
+- **`/host` — set and persist the default Ollama endpoint from inside chati.**
+  Follow-up to #39: `/ollama` switches for the current session only; `/host
+  <host|url|local>` writes `OLLAMA_HOST` to your `.env` so it survives restarts
+  (and applies immediately). `/host` alone shows the current + saved endpoint;
+  `/host local` resets to localhost and removes it from `.env`. Rewrites `.env`
+  in place (keeps comments and other vars, no duplicate lines, `600` perms). No
+  more hand-editing `.env` to point at a remote Ollama.
+
+## [1.21.0] - 2026-08-07
+
+### Added
+- **Use an external / remote Ollama, with discovery (#39).** Point chati at a
+  more powerful machine's Ollama for BOTH chat and model ops. Set `OLLAMA_HOST`
+  in `.env` (the same var the `ollama` CLI reads; chati derives its API URL from
+  it via `resolve_ollama_api`, so `/model`, list and pull hit the same box), or
+  switch live with the new **`/ollama`** command: it discovers reachable servers
+  (localhost + online Tailscale peers on :11434), lists them with versions, and
+  switches to the one you pick (`/ollama <n|host|url|local>`). Each server has
+  its own models, so `/settings` shows the endpoint next to the model when it's
+  remote. A `0.0.0.0` bind is treated as localhost for the client.
+
+## [1.20.0] - 2026-08-07
+
+### Changed
+- **Unified color config + `/persona` (naming polish).** All color settings now
+  live under one `/color` command: `/color` alone shows a menu (chat text +
+  voice/TTS highlight); `/color you|ai <name>` sets the chat colors and
+  `/color tts <fg/bg>` the spoken-highlight colors. This retires the confusing
+  near-twins `/color` vs `/colors` (the old `/colors fg/bg` still works as an
+  alias). And `/prompt` is now **`/persona`** (clearer: it sets the session's
+  role/persona; `/prompt` kept as an alias). `/settings` shows "Persona" and a
+  `tts=` entry in the Colors line.
+
+## [1.19.0] - 2026-08-07
+
+### Changed
+- **"Agent Mode" renamed to "Shell Mode" (`/shell`, `/s`, `/sY`).** In 2026
+  "agent" means an autonomous process you dispatch; chati's feature is the
+  opposite — the model proposes ONE shell command and you approve it. The new
+  name says what it does: enable shell commands (you stay in the loop). `/shell`
+  (`/s`) toggles it, `/sY` is auto-accept. The old `/agent`, `/a`, `/aY` keep
+  working as aliases, so nothing breaks. `/settings` and help now say "Shell".
+  To free `/s`, the `/batch` short alias moved to **`/b`** (`/batch` still works).
+
+## [1.18.3] - 2026-08-07
+
+### Fixed
+- **Streaming no longer hangs for 10+ minutes on a stuck/cold-loading model, and
+  background compaction stops timing out (#35).** Two causes:
+  1. The chat stream only had an overall `--max-time`, so a wedged or cold-
+     loading big model (or a sleeping host) produced 0 bytes for the whole
+     timeout before failing with a generic error. Added a stall guard
+     (`--speed-limit 1 --speed-time $OLA_STALL_TIMEOUT`, default 300s, plus a
+     10s connect timeout) so it aborts in minutes, and the error now names the
+     likely cause (big model cold-loading / low memory / asleep) with fixes
+     (smaller model via /model, `ailocal awake on`).
+  2. Background memory compaction and auto-titling used the big ANSWER model
+     (`active_model`), so they timed out behind it and silently dropped the
+     summary. They now use a small `compress_model` (COMPRESS_MODEL overrides).
+  Also: the test suite no longer writes to the real `~/logs/chati.log`.
+
+## [1.18.2] - 2026-08-07
+
+### Changed
+- **Smarter /web triage: local/disk actions no longer trigger a web search (#33).**
+  With `/web` on, the router ran on every message and, being SEARCH-biased with
+  no notion of local work, would web-search a disk task ("organize my Downloads",
+  "read ~/contract.pdf"). It now reasons on two axes and takes the Agent-Mode
+  signal: an action on your own machine/files -> DIRECT (no search), while a task
+  that must FETCH from the internet -> SEARCH even if it then saves locally
+  (e.g. "download cat images into ~/Downloads"). `augment_message` passes the
+  `/a`/`/aY` state to the router. Verified live: organize/read-local -> DIRECT,
+  download-images/current-price -> SEARCH.
+
+## [1.18.1] - 2026-08-06
+
+### Fixed
+- **Web search no longer mangles proper nouns / brands / domains (#29).** The
+  query decomposer (a small model) rewrote names it "recognized" — e.g. a
+  question about **claude.ai** was searched as **"claudia ai"**. The decomposer
+  prompt now hard-requires copying every proper noun, brand/product name, domain,
+  username and ticker character-for-character (no translate/transliterate/spell-
+  "correct"), and chati now ALWAYS also searches the user's original query
+  verbatim as a safety net, so the real terms are searched even if a subquery
+  drifts.
+
 ## [1.18.0] - 2026-08-06
 
 ### Added

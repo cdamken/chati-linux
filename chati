@@ -1,6 +1,6 @@
 #!/bin/bash
 #==============================================================================
-# Chati v1.18.0 - Ollama-Centric Chat Interface
+# Chati v1.25.2 - Ollama-Centric Chat Interface
 #==============================================================================
 set -o pipefail
 # Resolve this script's REAL directory, following symlinks, so chati works
@@ -19,7 +19,7 @@ CHATI_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 source "$CHATI_DIR/lib_chat.sh"
 
-CHATI_VERSION="1.18.0"
+CHATI_VERSION="1.25.3"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -67,7 +67,7 @@ history -c
 history -r "$HISTFILE"
 set +o history
 # Flush history once at exit instead of after every keystroke.
-trap 'history -w "$HISTFILE" 2>/dev/null' EXIT
+trap 'chati_on_exit' EXIT   # flush history + persist this session's settings (#37)
 
 # --- STATE ---
 LAST_RESPONSE=""
@@ -76,7 +76,7 @@ VOICE_MODE="OFF"         # Global talk toggle
 WEB_MODE="OFF"           # Global web search toggle
 THINK_MODE="OFF"         # Show the model's reasoning (/think); reasoning models only
 AGENT_MODE="OFF"         # Global autonomous agent toggle
-AGENT_AUTOACCEPT="OFF"   # /aY: run EVERY proposed command without asking
+AGENT_AUTOACCEPT="OFF"   # /sY: run EVERY proposed command without asking
 FORCE_LANG="auto"        # Language forcing (auto, en, es, de, etc.)
 SAY_COLORS="white/green" # Default colors for speech highlighting
 SAY_SPEED=1.0            # Speech speed multiplier (1.0 = 200 wpm)
@@ -110,6 +110,53 @@ AI_COLOR=$(ansi_color "$AI_COLOR_NAME")
 
 update_say_rate() {
     SAY_RATE=$(awk -v s="$SAY_SPEED" 'BEGIN { r=s*200; if(r<50)r=50; if(r>600)r=600; print int(r) }')
+}
+
+# --- Per-session settings (#37) ---
+# The runtime toggles below travel WITH the session: saved when you leave/switch,
+# restored when you return, so each conversation keeps its own config. A NEW
+# session inherits the editable global DEFAULTS (see /defaults). Model + prompt
+# are handled separately (prompt already per-session; model default is global).
+CHATI_SETTINGS_KEYS=(FORCE_LANG WEB_MODE THINK_MODE AGENT_MODE AGENT_AUTOACCEPT \
+                     VOICE_MODE DEFAULT_VOICE SAY_SPEED SAY_COLORS \
+                     USER_COLOR_NAME AI_COLOR_NAME)
+DEFAULTS_SETTINGS_FILE="${DEFAULTS_SETTINGS_FILE:-$CHATI_DATA_HOME/defaults_settings}"
+
+# Write the current toggles to a settings file (one KEY=value per line).
+settings_write() {
+    local f="$1" k; [[ -z "$f" ]] && return 0
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+    : > "$f" 2>/dev/null || return 0
+    for k in "${CHATI_SETTINGS_KEYS[@]}"; do printf '%s=%s\n' "$k" "${!k}" >> "$f"; done
+}
+# Read a settings file into the runtime toggles (known keys only), then refresh
+# the derived state (colors, speech rate). Returns 1 if the file is absent.
+settings_read() {
+    local f="$1" k v
+    [[ -f "$f" ]] || return 1
+    while IFS='=' read -r k v; do
+        case " ${CHATI_SETTINGS_KEYS[*]} " in *" $k "*) printf -v "$k" '%s' "$v" ;; esac
+    done < "$f"
+    USER_COLOR=$(ansi_color "$USER_COLOR_NAME"); AI_COLOR=$(ansi_color "$AI_COLOR_NAME")
+    update_say_rate
+    return 0
+}
+# Save the ACTIVE session's toggles (call before switching away / at exit).
+persist_session_settings() {
+    local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
+    [[ -n "$s" ]] && settings_write "$HISTORY_DIR/${s}_settings"
+}
+# Load the ACTIVE session's toggles; if it has none yet, fall back to the global
+# defaults (so a brand-new session inherits them). Silent if neither exists.
+load_active_settings() {
+    local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
+    [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" && return 0
+    settings_read "$DEFAULTS_SETTINGS_FILE" 2>/dev/null || true
+}
+# Clean-exit handler: flush command history AND the current session's settings.
+chati_on_exit() {
+    history -w "$HISTFILE" 2>/dev/null
+    persist_session_settings 2>/dev/null
 }
 
 # Trigger background memory compression after every COMPRESS_EVERY messages.
@@ -328,6 +375,12 @@ send_and_capture() {
         "$CHAT_CMD" "$@"
         [[ -n "$AI_COLOR" ]] && printf '%s' "$RESET_COLOR"
     fi
+    # Ctrl-C during streaming: ola was killed and the main-loop INT trap set
+    # the flag. Bail before speaking/compressing a truncated reply — the loop
+    # drops back to the prompt instead of exiting chati.
+    if (( ${_chati_interrupted:-0} )); then
+        return 130
+    fi
     LAST_RESPONSE=$(cat "$LAST_RESPONSE_FILE" 2>/dev/null || echo "")
     speak_if_enabled "$LAST_RESPONSE"
     maybe_compress
@@ -515,7 +568,9 @@ augment_message() {
         local do_search="yes"
         if [[ "${WEB_AUTO:-1}" == "1" ]]; then
             echo "🤔 Deciding if this needs the web..." >&2
-            if [[ "$(web_query_needs_search "$m")" == "DIRECT" ]]; then
+            # Pass the agent toggle so a local/disk instruction (which the agent
+            # can execute) isn't mistaken for a web query (#33).
+            if [[ "$(web_query_needs_search "$m" "$AGENT_MODE")" == "DIRECT" ]]; then
                 do_search="no"
                 echo "💬 Answering from the model — no web search needed." >&2
             fi
@@ -647,7 +702,9 @@ macro_sola() {
         (( interrupted )) && break
         "$MOLA_CMD" save > /dev/null
     done < <(sed -n "${start_line},${end_line}p" "$file")
-    trap - INT
+    # Restore the main-loop INT handler (not `trap - INT`, which would leave
+    # Ctrl-C uncaught and let the next one kill the whole REPL).
+    trap '_chati_interrupted=1' INT
 
     echo ""
     if (( interrupted )); then
@@ -876,7 +933,7 @@ macro_ocr() {
 
 show_settings() {
     local curr_sess
-    curr_sess=$(cat "$PREVIOUS_FILE" 2>/dev/null || echo "active")
+    curr_sess=$(cat "$PREVIOUS_FILE" 2>/dev/null); [[ -z "$curr_sess" ]] && curr_sess="(new — none yet)"
     local curr_model
     curr_model=$(active_model)
     local prompt_file
@@ -886,21 +943,28 @@ show_settings() {
         system_prompt_text=$(head -c 200 "$prompt_file")
         [[ $(wc -c < "$prompt_file") -gt 200 ]] && system_prompt_text="${system_prompt_text}…"
     fi
-    local agent_status="$AGENT_MODE   (read-only runs; risky asks y/N)"
-    [[ "$AGENT_AUTOACCEPT" == "ON" ]] && agent_status="ON 🔴 AUTO-ACCEPT (/aY: runs EVERYTHING without asking)"
+    local agent_status="$AGENT_MODE   (the AI runs shell commands you approve)"
+    [[ "$AGENT_AUTOACCEPT" == "ON" ]] && agent_status="ON 🔴 AUTO-ACCEPT (/sY: runs EVERYTHING without asking)"
+    # Show the endpoint next to the model only when it's a remote Ollama (#39),
+    # so a local session stays uncluttered but a remote one is obvious.
+    local model_where=""
+    case "$OLLAMA_API" in
+        http://localhost:11434|http://127.0.0.1:11434) ;;
+        *) model_where="   🛰️  $OLLAMA_API" ;;
+    esac
     cat << EOF
 
 Current Chati Settings:
 ==========================
-🤖 Model:    $curr_model
+🤖 Model:    $curr_model$model_where
 🌐 Lang:     $FORCE_LANG
 🔎 Web:      $WEB_MODE
 💭 Thinking: $THINK_MODE   (/think — show reasoning; reasoning models only)
-🛠️  Agent:    $agent_status
+🐚 Shell:    $agent_status
 🗣️  Talk:     $VOICE_MODE (Voice: $DEFAULT_VOICE, Speed: ${SAY_SPEED}x, Colors: $SAY_COLORS)
-🎨 Colors:   you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME  (/color to change)
+🎨 Colors:   you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME · tts=$SAY_COLORS  (/color to change)
 📅 Session:  $curr_sess
-🎭 Prompt:   $system_prompt_text
+🎭 Persona:  $system_prompt_text
 
 EOF
 }
@@ -918,6 +982,9 @@ Core:
 /help      (/h, /?)     Show this help menu.
 /quit      (/q)         Exit chat loop (also /bye, /exit).
 /settings               Show current chat settings.
+/defaults [save|clear]  Show / save / clear the global defaults that NEW
+                        sessions inherit. (Each session's settings are saved
+                        and restored automatically.)
 
 Session Management:
 -------------------
@@ -934,7 +1001,7 @@ Input & Files:
 /multi (/m)                 Compose a multiline message in \$EDITOR, then send
                             it (goes through /web, /lang, agent — like normal).
 /file  (/f) <file> [msg]    Send a whole file with an optional instruction.
-/batch (/s) [range] <file>  Batch: send each line of <file> separately.
+/batch (/b) [range] <file>  Batch: send each line of <file> separately.
                             Example: /batch 10-20 Stocks.txt
 /ocr <file|folder|glob>     OCR an image/PDF, a whole folder of them,
                             or a glob, then analyze the text. (Just naming
@@ -957,33 +1024,41 @@ Mode Toggles:
                         in normal color; the reasoning is never saved to
                         history. Only reasoning models have it (deepseek-r1,
                         gemma4, qwen3…); on a plain model /think says so.
-/agent (/a)             Toggle Agent Mode — allow the AI to propose
-                        shell commands to run on your Mac. Read-only
-                        commands (ls, cat, grep, find, ps…) run directly;
-                        anything that could modify files, processes,
-                        network or system shows a warning and asks
-                        "Execute? (y/N)" — denied unless you type y.
+/shell (/s)             Toggle Shell Mode — let the AI propose shell
+                        commands to run on your Mac (you approve them).
+                        Read-only commands (ls, cat, grep, find, ps…) run
+                        directly; anything that could modify files,
+                        processes, network or system shows a warning and
+                        asks "Execute? (y/N)" — denied unless you type y.
                         Set CHATI_AGENT_CONFIRM=all to confirm every
                         command. Off by default.
-/aY                     Toggle AUTO-ACCEPT (capital Y, on purpose so it
+/sY                     Toggle AUTO-ACCEPT (capital Y, on purpose so it
                         can't happen by accident): runs EVERY proposed
                         command WITHOUT asking — including destructive ones.
                         Shows a warning; only for a task you're watching.
-                        /aY again — or /a — returns to verification. There
-                        is no agent without safety unless you type /aY.
+                        /sY again — or /s — returns to verification. There
+                        is no Shell Mode without safety unless you type /sY.
 
 Configuration:
 --------------
-/prompt                 View the session prompt.
-/prompt <text>          Set the session prompt to a single line.
-/prompt -e              Edit the session prompt in \$EDITOR (multi-line).
-/prompt ""              Clear the session prompt.
+/persona                View the session persona (system prompt). (Alias /prompt.)
+/persona <text>         Set the session persona to a single line.
+/persona -e             Edit the persona in \$EDITOR (multi-line).
+/persona ""             Clear the persona.
 /model [idx|name]       List or switch Ollama model.
+/ollama [n|host|local]  List reachable Ollama servers (localhost + Tailscale)
+                        and switch to one for THIS session. Each server has
+                        its own models.
+/ollama forget <n|host>   Remove a saved server from the list.
+/host [host|url|local]  Set the DEFAULT Ollama endpoint and save it to .env
+                        (persists across restarts). /host alone shows current
+                        + saved. /host local resets to localhost.
 /lang [code]            List or set response language (auto, en, es, …).
 /voice [name]           List or set TTS voice (Samantha, Anna, Paulina, …).
 /speed [mult]           Set speech speed multiplier (0.25 – 3.0).
-/colors [fg/bg]         Set say --interactive (TTS highlight) colors.
-/color [user|ai] <name> Set chat TEXT color for your input vs the AI reply
+/color                  Show the color menu (chat text + voice/TTS highlight).
+/color you|ai <name>    Set chat TEXT color for your input vs the AI reply.
+/color tts <fg/bg>      Set the voice/TTS highlight colors. (Alias: /colors fg/bg.)
                         (default black red green yellow blue magenta cyan
                         white gray). Env: CHATI_USER_COLOR / CHATI_AI_COLOR.
 
@@ -1072,14 +1147,31 @@ migrate_legacy_state
 
 ensure_valid_model
 
+# Restore this session's saved toggles (or the global defaults for a fresh one)
+# before showing settings, so /settings reflects the persisted config (#37).
+load_active_settings
+
 show_settings
 echo "Type /h for help | /bye to exit."
 
+# Ctrl-C interrupts the current turn (stops the AI, cancels an agent step)
+# and returns to the prompt — it must NOT quit chati. Without a main-shell
+# INT trap, SIGINT killing the foreground `ola` propagates and terminates
+# the whole REPL. The flag is reset at the top of every iteration.
+_chati_interrupted=0
+trap '_chati_interrupted=1' INT
+
 while true; do
-    # Recover gracefully if the active session file was deleted.
+    _chati_interrupted=0
     curr_sess=$(cat "$PREVIOUS_FILE" 2>/dev/null)
-    if [[ -z "$curr_sess" || ! -f "$HISTORY_DIR/$curr_sess" ]]; then
-        echo "⚠️  Current session missing. Starting a new one..."
+    if [[ -z "$curr_sess" ]]; then
+        # Fresh terminal (its own tty) with no session yet — not an error,
+        # just the first one. Start it quietly.
+        echo "✨ Starting a new session…"
+        "$MOLA_CMD" new > /dev/null
+    elif [[ ! -f "$HISTORY_DIR/$curr_sess" ]]; then
+        # There WAS an active session but its file is gone (deleted/moved).
+        echo "⚠️  Previous session '$curr_sess' is gone — starting a new one."
         "$MOLA_CMD" new > /dev/null
     fi
 
@@ -1087,8 +1179,12 @@ while true; do
     # transcript). Emitted around read, not inside the prompt string, so
     # readline's width math for "> " stays correct.
     [[ -n "$USER_COLOR" ]] && printf '%s' "$USER_COLOR"
-    read -e -rp "> " msg
+    read -e -rp "> " msg; _read_rc=$?
     [[ -n "$USER_COLOR" ]] && printf '%s' "$RESET_COLOR"
+    # Ctrl-C at the prompt: just draw a fresh prompt (don't exit).
+    if (( _chati_interrupted )); then echo; continue; fi
+    # Ctrl-D / EOF: read fails with empty input — exit cleanly.
+    if (( _read_rc != 0 )); then echo; break; fi
     [[ -z "$msg" ]] && continue
     history -s "$msg"   # in-memory only; trap flushes on exit
 
@@ -1132,7 +1228,24 @@ while true; do
                 exit 0 ;;
             /h|/help|/\?) show_help ;;
             /settings)   show_settings ;;
-            /prompt)
+            /defaults)
+                # The editable global defaults a NEW session inherits (#37).
+                if [[ "$cmd_args" == save ]]; then
+                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    echo "💾 Saved current settings as the default for NEW sessions."
+                elif [[ "$cmd_args" == clear || "$cmd_args" == reset ]]; then
+                    rm -f "$DEFAULTS_SETTINGS_FILE"
+                    echo "🧹 Cleared the global defaults (new sessions start from built-in defaults)."
+                else
+                    if [[ -f "$DEFAULTS_SETTINGS_FILE" ]]; then
+                        echo "🌐 Global defaults for new sessions:"
+                        sed 's/^/   /' "$DEFAULTS_SETTINGS_FILE"
+                    else
+                        echo "🌐 No global defaults set — new sessions use built-in defaults."
+                    fi
+                    echo "   /defaults save   (make the current settings the default)   ·   /defaults clear"
+                fi ;;
+            /persona|/prompt)
                 prompt_file=$(current_session_prompt_file)
                 if [[ -z "$cmd_args" ]]; then
                     if [[ -f "$prompt_file" && -s "$prompt_file" ]]; then
@@ -1156,9 +1269,9 @@ while true; do
                 fi
                 ;;
             /sessions)   "$MOLA_CMD" list ;;
-            /new)        "$MOLA_CMD" new "$cmd_args" ;;
-            /switch)     "$MOLA_CMD" switch "$cmd_args" ;;
-            /back)       "$MOLA_CMD" back ;;
+            /new)        persist_session_settings; "$MOLA_CMD" new "$cmd_args"; load_active_settings ;;
+            /switch)     persist_session_settings; "$MOLA_CMD" switch "$cmd_args"; load_active_settings ;;
+            /back)       persist_session_settings; "$MOLA_CMD" back; load_active_settings ;;
             # $cmd_args is left unquoted on purpose so "3 new_name" splits
             # into two args — but disable globbing first (set -f) so a
             # name like "*" isn't expanded against the cwd, then restore.
@@ -1178,44 +1291,47 @@ while true; do
                     macro_fola "$f_path" "$f_instruction"
                 fi
                 ;;
-            /batch|/s)   macro_sola "$cmd_args" ;;
+            /batch|/b)   macro_sola "$cmd_args" ;;
             /talk|/t)
                 if [[ "$VOICE_MODE" == "ON" ]]; then VOICE_MODE="OFF"; else VOICE_MODE="ON"; fi
                 echo "🗣️  Auto-Voice: $VOICE_MODE" ;;
-            /colors)
-                if [[ -n "$cmd_args" ]]; then
-                    # Whitelist the input — say --interactive=COLORS expects
-                    # exactly "fg/bg" with both names from a fixed palette.
-                    # Anything else risks breaking the say invocation when
-                    # the variable is expanded.
-                    if [[ "$cmd_args" =~ ^[a-z]+/[a-z]+$ ]]; then
-                        SAY_COLORS="$cmd_args"
-                        echo "🎨 Speech colors set to: $SAY_COLORS"
-                    else
-                        echo "❌ Invalid format. Use foreground/background, e.g. white/green"
-                    fi
-                else
-                    echo "🎨 Current speech colors: $SAY_COLORS"
-                    echo "Available: black, red, green, yellow, blue, magenta, cyan, white"
-                    echo "Usage: /colors foreground/background"
-                fi
-                ;;
-            /color)
-                # Chat TEXT colors (user vs AI). Distinct from /colors (TTS).
+            # (/colors is folded into the unified /color arm below.)
+            /color|/colors)
+                # ONE place for every color: chat text (you/ai) + the voice/TTS
+                # highlight. `/color` with no args prints a menu of all of them.
+                # `/colors [fg/bg]` stays backward-compatible → the tts target.
                 csub="${cmd_args%% *}"; cval=""
                 [[ "$cmd_args" == *" "* ]] && cval="${cmd_args#* }"
+                if [[ "$cmd_name" == "/colors" && -n "$cmd_args" \
+                      && "$csub" != tts && "$csub" != voice && "$csub" != you \
+                      && "$csub" != user && "$csub" != ai ]]; then
+                    csub="tts"; cval="$cmd_args"   # legacy: /colors white/green
+                fi
                 if [[ -z "$csub" ]]; then
-                    echo "🎨 Chat text colors — you: ${USER_COLOR}${USER_COLOR_NAME}${RESET_COLOR} · AI: ${AI_COLOR}${AI_COLOR_NAME}${RESET_COLOR}"
-                    echo "   Set: /color user <name>   |   /color ai <name>"
+                    echo "🎨 Colors — set with /color <target> <value>:"
+                    echo "   Chat text:"
+                    echo "     you = ${USER_COLOR}${USER_COLOR_NAME}${RESET_COLOR}   → /color you <name>"
+                    echo "     ai  = ${AI_COLOR}${AI_COLOR_NAME}${RESET_COLOR}   → /color ai <name>"
+                    echo "   Voice highlight (TTS, spoken text):"
+                    echo "     tts = $SAY_COLORS   → /color tts <fg/bg>"
                     echo "   Names: default black red green yellow blue magenta cyan white gray"
-                elif [[ "$csub" == user && -n "$cval" ]]; then
-                    USER_COLOR_NAME="$cval"; USER_COLOR=$(ansi_color "$cval")
-                    echo "✅ Your text color → ${USER_COLOR}${cval}${RESET_COLOR}"
-                elif [[ "$csub" == ai && -n "$cval" ]]; then
-                    AI_COLOR_NAME="$cval"; AI_COLOR=$(ansi_color "$cval")
-                    echo "✅ AI text color → ${AI_COLOR}${cval}${RESET_COLOR}"
+                elif [[ "$csub" == you || "$csub" == user ]]; then
+                    if [[ -n "$cval" ]]; then
+                        USER_COLOR_NAME="$cval"; USER_COLOR=$(ansi_color "$cval")
+                        echo "✅ Your text color → ${USER_COLOR}${cval}${RESET_COLOR}"
+                    else echo "Usage: /color you <name>"; fi
+                elif [[ "$csub" == ai ]]; then
+                    if [[ -n "$cval" ]]; then
+                        AI_COLOR_NAME="$cval"; AI_COLOR=$(ansi_color "$cval")
+                        echo "✅ AI text color → ${AI_COLOR}${cval}${RESET_COLOR}"
+                    else echo "Usage: /color ai <name>"; fi
+                elif [[ "$csub" == tts || "$csub" == voice || "$csub" == speech ]]; then
+                    # say --interactive=COLORS needs exactly fg/bg from a fixed palette.
+                    if [[ "$cval" =~ ^[a-z]+/[a-z]+$ ]]; then
+                        SAY_COLORS="$cval"; echo "✅ Voice highlight (TTS) → $SAY_COLORS"
+                    else echo "❌ Use foreground/background, e.g. /color tts white/green"; fi
                 else
-                    echo "Usage: /color [user|ai] <name>   (run /color to see options)"
+                    echo "Usage: /color [you|ai <name> | tts <fg/bg>]   (run /color for the menu)"
                 fi
                 ;;
             /ocr)
@@ -1238,30 +1354,35 @@ while true; do
                     echo "❌ Provide URL."
                 fi
                 ;;
-            /agent|/a)
-                # /a never enables auto-accept. From auto-accept it de-escalates
-                # to verification; otherwise it toggles ON(verification)/OFF.
+            /agent|/a|/aY)
+                # Retired names (#47): renamed to Shell. Do NOT act — especially
+                # /aY, which used to arm auto-accept; just point to the new name.
+                echo "ℹ️  '$cmd_name' was renamed. Use /shell (/s) to toggle Shell Mode, /sY for auto-accept." ;;
+            /shell|/s)
+                # Shell Mode: the model proposes shell commands you approve. /s
+                # never enables auto-accept. From auto-accept it de-escalates to
+                # verification; otherwise it toggles ON(verification)/OFF.
                 if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
                     AGENT_AUTOACCEPT="OFF"
-                    echo "🛡️  Agent Mode: ON (verification) — auto-accept OFF; risky commands ask 'Execute? (y/N)' again."
+                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; risky commands ask 'Execute? (y/N)' again."
                 elif [[ "$AGENT_MODE" == "ON" ]]; then
                     AGENT_MODE="OFF"
-                    echo "🛠️  Agent Mode: OFF — AI can no longer run shell commands."
+                    echo "🐚 Shell: OFF — the AI can no longer run shell commands."
                 else
                     AGENT_MODE="ON"
-                    echo "🛡️  Agent Mode: ON (verification) — read-only runs directly; anything that could"
-                    echo "    change files/processes/network/system asks 'Execute? (y/N)'."
+                    echo "🛡️  Shell: ON (verification) — the AI proposes commands; read-only ones run directly,"
+                    echo "    anything that could change files/processes/network/system asks 'Execute? (y/N)'."
                 fi ;;
-            /aY)   # capital Y on purpose — a deliberate, can't-happen-by-accident switch
+            /sY)   # capital Y on purpose — a deliberate, can't-happen-by-accident switch
                 if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
                     AGENT_AUTOACCEPT="OFF"   # AGENT_MODE stays ON → back to verification
-                    echo "🛡️  Agent Mode: ON (verification) — auto-accept OFF; risky commands ask again."
+                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; risky commands ask again."
                 else
                     AGENT_MODE="ON"; AGENT_AUTOACCEPT="ON"
                     echo "🔴 ⚠️  AUTO-ACCEPT ON — the AI will run EVERY command it proposes on your Mac"
                     echo "       WITHOUT asking, INCLUDING destructive ones (rm, sudo, network, overwrites…)."
                     echo "       Only for a task you're actively watching. Ctrl-C interrupts."
-                    echo "       Type /aY again (or /a) to return to verification."
+                    echo "       Type /sY again (or /s) to return to verification."
                 fi ;;
             /web|/w)
                 if [[ "$WEB_MODE" == "ON" ]]; then
@@ -1327,6 +1448,98 @@ while true; do
                     # model. Prompt for the choice right here instead.
                     read -e -rp "Select a model number or name (Enter to cancel): " model_sel
                     [[ -n "$model_sel" ]] && "$OLA_MODEL_CMD" set "$model_sel"
+                fi ;;
+            /ollama|/endpoint)
+                # List Ollama servers (localhost + Tailscale peers + every server
+                # you've saved before) and switch between them for THIS session.
+                # Reachable ones show a version; saved-but-asleep ones show OFFLINE
+                # but are still pickable. Each server has its OWN models (#39).
+                o_sub="${cmd_args%% *}"
+                if [[ "$o_sub" == forget ]]; then
+                    o_rest="${cmd_args#forget}"; o_rest="${o_rest# }"
+                    if [[ "$o_rest" == [0-9]* ]]; then
+                        o_rest=$(ollama_endpoints_status | sed -n "${o_rest}p" | cut -f1)
+                    fi
+                    if [[ -n "$o_rest" ]]; then forget_ollama_host "$o_rest"; echo "🗑️  Forgot $o_rest"; else echo "Usage: /ollama forget <number|host>"; fi
+                elif [[ -z "$cmd_args" ]]; then
+                    echo "🛰️  Ollama servers (reachable + saved):"
+                    ollama_idx=0
+                    while IFS=$'\t' read -r o_url o_ver; do
+                        ollama_idx=$((ollama_idx + 1))
+                        o_mark=""; [[ "$o_url" == "$OLLAMA_API" ]] && o_mark="  ← current"
+                        if [[ "$o_ver" == OFFLINE ]]; then
+                            printf '   %d. %s  (saved, offline)%s\n' "$ollama_idx" "$o_url" "$o_mark"
+                        else
+                            printf '   %d. %s  (v%s)%s\n' "$ollama_idx" "$o_url" "$o_ver" "$o_mark"
+                        fi
+                    done < <(ollama_endpoints_status)
+                    [[ "$ollama_idx" -eq 0 ]] && echo "   (none found — you can still point at any LAN IP by hand)"
+                    echo "   Current: $OLLAMA_API"
+                    echo "   Switch:  /ollama <number|host|url|local>   ·   Forget saved:  /ollama forget <n|host>"
+                else
+                    if [[ "$cmd_args" == local ]]; then
+                        o_new="http://localhost:11434"
+                    elif [[ "$cmd_args" == [0-9]* ]]; then
+                        o_new=$(ollama_endpoints_status | sed -n "${cmd_args}p" | cut -f1)
+                    elif [[ "$cmd_args" == http://* || "$cmd_args" == https://* ]]; then
+                        o_new="$cmd_args"
+                    else
+                        o_new="http://$cmd_args"; [[ "$cmd_args" != *:* ]] && o_new="http://$cmd_args:11434"
+                    fi
+                    if [[ -z "$o_new" ]]; then
+                        echo "❌ No endpoint #$cmd_args in the list — run /ollama to see them."
+                    elif curl -fsS --max-time 3 "$o_new/api/version" >/dev/null 2>&1; then
+                        export OLLAMA_API="$o_new"
+                        o_host="${o_new#http://}"; o_host="${o_host#https://}"
+                        export OLLAMA_HOST="$o_host"   # so `ollama` CLI (/model, list, pull) hits it too
+                        remember_ollama_host "$o_host" # save it for next time (multiple servers kept)
+                        echo "✅ Now using Ollama at $OLLAMA_API  (saved for later)"
+                        echo "   Its models differ from other endpoints — run /model to pick one available here."
+                    else
+                        echo "❌ Can't reach $o_new (is that Ollama up and exposed?)."
+                    fi
+                fi ;;
+            /host)
+                # Set the DEFAULT Ollama endpoint and PERSIST it to .env, so it
+                # survives restarts (unlike /ollama, which switches only for this
+                # session). /host with no args shows the current + saved default.
+                if [[ -z "$cmd_args" ]]; then
+                    echo "🛰️  Ollama endpoint (now): $OLLAMA_API"
+                    h_saved=$(grep -E '^[[:space:]]*(export[[:space:]]+)?OLLAMA_HOST=' "$CHAT_ENV" 2>/dev/null \
+                              | tail -1 | sed -E 's/^[^=]*=//; s/^"//; s/"$//')
+                    [[ -n "$h_saved" ]] && echo "   saved default (.env): $h_saved" \
+                                        || echo "   no saved default (localhost unless overridden)"
+                    echo "   Save a default:  /host <host|url|local>      Browse live:  /ollama"
+                else
+                    if [[ "$cmd_args" == local || "$cmd_args" == off || "$cmd_args" == localhost ]]; then
+                        h_target=""
+                    elif [[ "$cmd_args" == http://* || "$cmd_args" == https://* ]]; then
+                        h_target="${cmd_args#http*://}"
+                    else
+                        h_target="$cmd_args"; [[ "$h_target" != *:* ]] && h_target="$h_target:11434"
+                    fi
+                    # Rewrite .env: drop any existing OLLAMA_HOST line, keep the
+                    # rest, add the new one (unless clearing back to localhost).
+                    h_tmp=$(mktemp)
+                    if [[ -f "$CHAT_ENV" ]]; then
+                        grep -vE '^[[:space:]]*(export[[:space:]]+)?OLLAMA_HOST=' "$CHAT_ENV" > "$h_tmp" 2>/dev/null || : > "$h_tmp"
+                    else : > "$h_tmp"; fi
+                    [[ -n "$h_target" ]] && printf 'export OLLAMA_HOST="%s"\n' "$h_target" >> "$h_tmp"
+                    ( umask 077; mv "$h_tmp" "$CHAT_ENV" )
+                    if [[ -z "$h_target" ]]; then
+                        export OLLAMA_HOST="localhost:11434"; export OLLAMA_API="http://localhost:11434"
+                        echo "🏠 Endpoint reset to localhost and removed from .env."
+                    else
+                        export OLLAMA_HOST="$h_target"; export OLLAMA_API="http://$h_target"
+                        remember_ollama_host "$h_target"   # also list it under /ollama
+                        if curl -fsS --max-time 3 "$OLLAMA_API/api/version" >/dev/null 2>&1; then
+                            echo "✅ Saved default Ollama → $OLLAMA_API (in .env; active now and on next launch)."
+                            echo "   Its models differ — run /model to pick one available here."
+                        else
+                            echo "💾 Saved default Ollama → $OLLAMA_API (in .env), but can't reach it right now."
+                            echo "   It'll be used once it's up (wake the machine, or 'ailocal awake on' there)."
+                        fi
+                    fi
                 fi ;;
             /lang)
                 if [[ -z "$cmd_args" ]]; then
@@ -1435,9 +1648,36 @@ while true; do
         unset OLA_EXTRA_SYSTEM
     fi
 
+    # Auto-fallback: if we're pointed at a REMOTE Ollama that just went away
+    # (asleep, off the network), drop back to localhost so you're not stuck.
+    # Only runs when remote, and only if localhost actually answers. Disable
+    # with CHATI_OLLAMA_FALLBACK=0.
+    if [[ "${CHATI_OLLAMA_FALLBACK:-1}" != 0 ]]; then
+        case "$OLLAMA_API" in
+            http://localhost:11434|http://127.0.0.1:11434) ;;
+            *)
+                if ! curl -fsS --max-time 3 "$OLLAMA_API/api/version" >/dev/null 2>&1; then
+                    if curl -fsS --max-time 3 "http://localhost:11434/api/version" >/dev/null 2>&1; then
+                        echo "⚠️  Lost the remote Ollama ($OLLAMA_API) — falling back to localhost." >&2
+                        export OLLAMA_API="http://localhost:11434"; export OLLAMA_HOST="localhost:11434"
+                        ensure_valid_model   # the remote's model may not exist locally; pick a valid one
+                    else
+                        echo "⚠️  Remote Ollama ($OLLAMA_API) is unreachable, and no local Ollama to fall back to." >&2
+                    fi
+                fi ;;
+        esac
+    fi
+
     _ft_logged=0
     while true; do
         send_and_capture "$msg"
+
+        # Ctrl-C during generation: stop this turn, back to the prompt.
+        if (( _chati_interrupted )); then
+            echo
+            echo "🛑 Stopped."
+            break
+        fi
 
         # Fine-tuning log (#12): capture the user turn once — instruction, the
         # context actually sent, and the reply — before any agent sub-steps.
@@ -1456,7 +1696,7 @@ while true; do
             # (the classic behaviour).
             run_it=0
             if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
-                echo "   🔴 auto-accept (/aY) — running without asking"
+                echo "   🔴 auto-accept (/sY) — running without asking"
                 run_it=1
             elif [[ "${CHATI_AGENT_CONFIRM:-}" != "all" ]] && agent_cmd_is_safe "$agent_cmd"; then
                 echo "   ✅ read-only — running without confirmation"
@@ -1464,6 +1704,7 @@ while true; do
             else
                 echo "   ⚠️  This may modify files, processes, network or system — review it."
                 read -rp "✅ Execute? (y/N): " confirm
+                if (( _chati_interrupted )); then echo; echo "🛑 Stopped."; break; fi
                 agent_confirmed "$confirm" && run_it=1
             fi
             if [[ "$run_it" == 1 ]]; then
@@ -1472,6 +1713,7 @@ while true; do
                 # the user's next prompt / hang the loop).
                 agent_output=$(bash -c "$agent_cmd" </dev/null 2>&1)
                 agent_exit=$?
+                if (( _chati_interrupted )); then echo; echo "🛑 Stopped."; break; fi
                 if [[ -z "$agent_output" ]]; then
                     if (( agent_exit == 0 )); then
                         echo "📄 Output: (no output, exit=0 — command succeeded)"

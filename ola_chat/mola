@@ -23,7 +23,7 @@ list_session_files() {
     for f in "$HISTORY_DIR"/*; do
         [[ -f "$f" ]] || continue
         case "$f" in
-            *_summary|*_prompt|*_compressed_at|*.lock) continue ;;
+            *_summary|*_prompt|*_compressed_at|*_settings|*.lock) continue ;;
         esac
         files+=("$f")
     done
@@ -200,7 +200,7 @@ autorename_conversation() {
     local sample
     sample=$(tail -c "${MAX_COMPRESS_CHARS:-10000}" "$target_file")
     local model
-    model=$(active_model)
+    model=$(compress_model)
 
     local prompt="Task: Create a 3-5 word title for this conversation.
 - Focus on the ACTUAL TOPIC (e.g. 'stocks_market_trend_analysis', 'medical_report_summary').
@@ -331,7 +331,7 @@ compress_memory() {
 
     echo -n "🌀 Compacting memory for '$sess_name'... "
     local model
-    model=$(active_model)
+    model=$(compress_model)
 
     # Fold-forward: feed the PREVIOUS summary back in so early facts
     # (ISINs, decisions from the start of a long chat) survive. The old
