@@ -7,6 +7,80 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.27.0] - 2026-08-11
+
+### Changed
+- **`/host` is now the single command for Ollama endpoints.** It absorbed
+  `/ollama`: `/host` lists discovered + saved servers (localhost + Tailscale
+  peers) with versions and the current default; `/host <n|name|local>` sets the
+  default (saved to `.env`); `/host <n|name> session` switches for this run only
+  (not saved); `/host forget <n|name>` drops a saved one. A bare host still
+  defaults to `:11434`.
+
+### Removed
+- **Dropped legacy command aliases and the retired-name notices** (single-user
+  cleanup, no migration path needed): `/ollama` and `/endpoint` (use `/host`),
+  `/prompt` (use `/persona`), `/colors` (use `/color`), and `/agent` / `/a` /
+  `/aY` (use `/shell` / `/s` / `/sY`). The designed word+short-form pairs stay:
+  `/file`+`/f`, `/batch`+`/b`, `/talk`+`/t`, `/web`+`/w`, `/shell`+`/s`.
+- **Removed the old `~/chat` → `~/chati` folder migration** from `setup.sh` and
+  the README (the rename is long done; nobody runs the old path).
+
+## [1.26.2] - 2026-08-11
+
+### Changed
+- **`ailocal lan on` now enables auto-heal automatically** (and `lan off`
+  disables it). Exposing Ollama on the network is exactly when the sleep/wake
+  bind-wedge bites (#55), so the self-healer that keeps remote clients from
+  losing the server after the Mac naps is now coupled to LAN exposure instead of
+  being a separate step you had to know about. `setup.sh` does **not** expose
+  Ollama by default (it has no auth); its final summary points to `ailocal lan
+  on` for those who want to serve other machines, noting it also turns on
+  auto-heal.
+
+## [1.26.1] - 2026-08-11
+
+### Fixed
+- **chati no longer hangs at startup when `.env` points at an unreachable
+  Ollama.** If a saved `OLLAMA_HOST` (via `/host`) named a remote box that was
+  down, startup tried to launch a LOCAL `ollama serve` and wait for it — but
+  with `OLLAMA_HOST` set to a remote address the server can't even bind, so the
+  readiness loop spun and the session appeared frozen right after the banner
+  (`🚀 Starting 'ollama serve'…`). Now startup detects a remote endpoint and,
+  instead of starting a local server, **falls back to localhost when it
+  answers** (so chats keep working) or prints a clear note and continues —
+  never blocks. Point back at the remote with `/host <name>` once it's up.
+
+## [1.26.0] - 2026-08-11
+
+### Added
+- **`ailocal autoheal` — self-heal Ollama's LAN/Tailscale bind after a
+  sleep/wake (#55).** After the Mac sleeps and wakes (or Ollama auto-updates in
+  the background), the daemon can keep running yet stop accepting on the real
+  interfaces while `localhost` still works, so remote clients get `connection
+  reset` / `empty reply` even though `pgrep` says Ollama is up. `ailocal
+  autoheal on` installs a LaunchAgent that probes reachability off-localhost
+  every 120s (configurable via `AUTOHEAL_INTERVAL`) and restarts Ollama when the
+  bind is wedged; launchd also fires it right after wake, so it recovers within
+  one interval. `ailocal heal` runs the check once by hand. No-op unless `ailocal
+  lan on` is set.
+
+### Changed
+- **`/model` / `/models`.** `/models` is now accepted as an alias of `/model`
+  (it used to say "Unknown command"). When the active Ollama endpoint is
+  **remote** and unreachable, the error now says the remote machine is
+  asleep/unexposed and points to `/ollama` or `/host local`, instead of the
+  misleading "start it with ailocal startollama" (which only applies locally).
+
+## [1.25.5] - 2026-08-11
+
+### Changed
+- **`/host` and `/ollama` default the port to 11434 consistently.** A bare host
+  already worked (`/host heather` → `heather:11434`); now a full URL with a
+  scheme but no port does too (`/host http://heather` used to hit `:80`, now
+  `heather:11434`). An explicit port or a URL with a path is left untouched.
+  Help text for `/host` now spells out the default.
+
 ## [1.25.4] - 2026-08-08
 
 ### Fixed

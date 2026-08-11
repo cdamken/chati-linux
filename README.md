@@ -2,7 +2,7 @@
 
 An Ollama-centric, high-performance chat interface for the command line, with local AI service management and OpenWebUI integration.
 
-![version](https://img.shields.io/badge/version-1.25.4-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![version](https://img.shields.io/badge/version-1.27.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 > **chati-linux** (this fork) is porting chati to Ubuntu/Linux while keeping macOS working (cross-platform via OS detection). Tracking: [#1](../../issues/1) · upstream: [cdamken/chati#30](https://github.com/cdamken/chati/issues/30).
 
@@ -18,10 +18,9 @@ An Ollama-centric, high-performance chat interface for the command line, with lo
 > eval "$(/opt/homebrew/bin/brew shellenv)"
 > ```
 
-**1. Get the code** (clones it, or force-updates an existing `~/chati` — and moves an old `~/chat` over automatically):
+**1. Get the code** (clones it, or force-updates an existing `~/chati`):
 
 ```bash
-[ -d ~/chat/.git ] && [ ! -e ~/chati ] && mv ~/chat ~/chati
 git clone https://github.com/cdamken/chati ~/chati 2>/dev/null || (cd ~/chati && git fetch origin && git reset --hard origin/main)
 cd ~/chati
 ```
@@ -103,10 +102,9 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 
 ### 2. Get the code
 
-Clone it — or, **if `~/chati` already exists** (you cloned before), the second half force-updates it to the latest instead of failing with *"destination path already exists"*. The first line **renames an old `~/chat` install to `~/chati`** (the project's original name was `chat`; it's `chati` now) — your `.env` moves with it, and saved sessions live outside the checkout so they're unaffected:
+Clone it — or, **if `~/chati` already exists** (you cloned before), the second half force-updates it to the latest instead of failing with *"destination path already exists"*. Saved sessions live outside the checkout, so they're unaffected:
 
 ```bash
-[ -d ~/chat/.git ] && [ ! -e ~/chati ] && mv ~/chat ~/chati
 git clone https://github.com/cdamken/chati ~/chati 2>/dev/null || (cd ~/chati && git fetch origin && git reset --hard origin/main)
 cd ~/chati
 ```
@@ -170,7 +168,7 @@ chati
 >
 > Force a specific model with `./setup.sh --model NAME` (e.g. `llama3.3:70b` on a high-RAM Mac). If the configured model isn't installed (e.g. after switching machines), chati **auto-falls-back** to an installed model instead of failing every message — pick any model anytime with `/model`. For a faster `/web` triage router, also pull a small model: `ollama pull llama3.2:3b`.
 >
-> **Using a remote Ollama.** On a weak laptop you can offload to a beefier machine's Ollama. Point at it with **any reachable address** (a LAN IP like `192.168.1.50:11434`, a hostname, or a Tailscale name — Tailscale is just convenient, not required): set `OLLAMA_HOST` in `.env`, save a persistent default from inside chati with **`/host <addr>`**, or switch just for this session with **`/ollama`**. chati sends both chat and `/model`/list/pull to that box, and each box has its own installed models. Only `/ollama`'s auto-**discovery** is Tailscale-based (it scans localhost + Tailscale peers); you can always point at a plain LAN IP by hand with `/host` or `/ollama <addr>`.
+> **Using a remote Ollama.** On a weak laptop you can offload to a beefier machine's Ollama. Point at it with **any reachable address** (a LAN IP like `192.168.1.50:11434`, a hostname, or a Tailscale name — Tailscale is just convenient, not required): set `OLLAMA_HOST` in `.env`, or save a persistent default from inside chati with **`/host <addr>`**. **`/host`** alone lists the servers it can reach (it scans localhost + Tailscale peers) plus any you've saved, and **`/host <n|name> session`** switches just for this session. chati sends both chat and `/model`/list/pull to that box, and each box has its own installed models.
 
 ### 5. OpenWebUI — browser UI on top of Ollama
 
@@ -193,11 +191,6 @@ There are **two independent things** to keep current — don't confuse them:
 cd ~/chati
 git pull
 ```
-
-> **Still on the old `~/chat`?** The install folder was renamed `chat` → `chati`. Move it once (your `.env` comes along; sessions live outside the checkout, so they're safe) — or just re-run `./setup.sh` from `~/chat`, which moves itself to `~/chati` and re-points the `chati`/`ailocal` commands:
-> ```bash
-> cd ~ && [ ! -e ~/chati ] && mv chat chati && cd chati
-> ```
 
 Your config and chats are safe: `.env` and `conversation_histories/` are gitignored, so `git pull` never touches them. If a very old checkout refuses to pull cleanly, force it to match the repo (this only discards local *code* edits, not your data):
 
@@ -322,6 +315,27 @@ export OLLAMA_API=http://your-mac.your-tailnet.ts.net:11434
 ```
 
 > ⚠️ **Ollama has no authentication.** On the raw LAN, anyone who can reach the port can use or delete your models — only enable on a trusted network, or rely on Tailscale (private, your devices only). This exposes only Ollama; OpenWebUI/SearXNG stay localhost.
+
+### Remote server refuses connections after an Ollama upgrade
+
+If a remote server suddenly stops answering from other machines — `localhost` on the server still works, but clients get `Connection reset by peer` (errno 54) or `Empty reply from server` — the usual cause is a **stale `ollama serve` left running the old binary after an upgrade**. It keeps listening on `*:11434` and accepts loopback, but drops every non-loopback (LAN/Tailscale) connection. It looks like a firewall problem, but it is not.
+
+Fix it by restarting the server so the current binary takes over:
+
+```bash
+pkill -f "ollama serve"
+OLLAMA_HOST=0.0.0.0:11434 ollama serve   # or: ailocal restart
+curl -sS http://<server-ip>:11434/api/version   # verify from the server host
+```
+
+The same wedge happens after the server Mac **sleeps and wakes**: Ollama keeps running but stops accepting on the real interfaces. `ailocal lan on` already turns on the self-healer for you, so an exposed server recovers on its own. To manage it directly:
+
+```bash
+ailocal autoheal on    # probes reachability every 120s, restarts Ollama if the bind is wedged
+ailocal heal           # run the check once by hand
+```
+
+It runs via a LaunchAgent (launchd fires it right after wake too), so a stale or post-sleep bind is restored within ~2 minutes without you touching anything. No-op unless `ailocal lan on` is set. See [#52](https://github.com/cdamken/chati/issues/52) and [#55](https://github.com/cdamken/chati/issues/55).
 
 ### Keeping a server Mac awake
 
@@ -468,13 +482,12 @@ Each instance keeps its own active session, buffer, `/back` pointer and command 
 - `/url <link>`: Analyze webpage content.
 
 ### Configuration
-- `/prompt [text|-e]`: View, set, edit in `$EDITOR` (`-e`) or clear (`""`) the session prompt.
+- `/persona [text|-e]`: View, set, edit in `$EDITOR` (`-e`) or clear (`""`) the session persona.
 - `/model [idx|name]`: List or switch the Ollama model.
 - `/lang [code]`: List or set the LLM response language (auto, en, es, de, …).
 - `/voice [name]`: List or set the macOS TTS voice.
 - `/speed [0.25-3.0]`: Adjust talk speed (multiplier format).
-- `/colors [f/b]`: Set colors for speech highlighting / TTS (e.g., white/green).
-- `/color`: One menu for **all colors**. `/color` alone lists them; `/color you <name>` / `/color ai <name>` set the **chat text** colors (your input vs the AI reply); `/color tts <fg/bg>` sets the **voice/TTS highlight** colors. Names: default, black, red, green, yellow, blue, magenta, cyan, white, gray. Defaults: you=cyan, AI=terminal default, tts=white/green. Persist per-machine via `CHATI_USER_COLOR` / `CHATI_AI_COLOR` in `.env`. (Old `/colors fg/bg` still works as an alias.)
+- `/color`: One menu for **all colors**. `/color` alone lists them; `/color you <name>` / `/color ai <name>` set the **chat text** colors (your input vs the AI reply); `/color tts <fg/bg>` sets the **voice/TTS highlight** colors. Names: default, black, red, green, yellow, blue, magenta, cyan, white, gray. Defaults: you=cyan, AI=terminal default, tts=white/green. Persist per-machine via `CHATI_USER_COLOR` / `CHATI_AI_COLOR` in `.env`.
 - `/settings`: Show current chat settings.
 
 ---
