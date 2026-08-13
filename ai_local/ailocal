@@ -5,6 +5,18 @@ set -o pipefail
 
 AILOCAL_VERSION="3.2.0"
 
+# Resolve this script's REAL path (following symlinks — e.g. invoked via
+# ~/.local/bin/ailocal). systemd user units must point at the real file so
+# they keep working even if the PATH link changes.
+_ail_src="${BASH_SOURCE[0]}"
+while [[ -L "$_ail_src" ]]; do
+    _ail_dir="$(cd -P "$(dirname "$_ail_src")" && pwd)"
+    _ail_src="$(readlink "$_ail_src")"
+    [[ "$_ail_src" != /* ]] && _ail_src="$_ail_dir/$_ail_src"
+done
+AILOCAL_BIN="$(cd -P "$(dirname "$_ail_src")" && pwd)/ailocal"
+unset _ail_src _ail_dir
+
 # === GLOBAL CONFIGURATION ===
 LOG_DIR="$HOME/logs"
 LOG_FILE="$LOG_DIR/ailocal.log"
@@ -43,6 +55,24 @@ _ail_lan_ip() {
 _ail_open() {
     if _ail_is_mac; then command -v open >/dev/null 2>&1 && open "$1"
     else command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1 || true; fi
+}
+# True on Linux when Ollama is managed by the systemd system service that the
+# official Linux installer ships (runs as the `ollama` user). When present we
+# must drive it with `systemctl` (a user-level pkill can't kill the root/ollama
+# process), and it already auto-starts at boot — which also means `ailocal`'s
+# autostart unit only needs to bring up webui + searxng. Detects the unit's
+# EXISTENCE, not its runtime state, so stop→start uses systemctl consistently.
+_ollama_systemd() {
+    _ail_is_mac && return 1
+    systemctl cat ollama.service >/dev/null 2>&1
+}
+
+# Drive the system ollama.service. Starting/stopping a root-owned system unit
+# needs admin rights, so escalate via sudo when a plain systemctl call fails.
+_ollama_systemctl() {
+    local action="$1"
+    systemctl "$action" ollama.service 2>/dev/null \
+        || sudo systemctl "$action" ollama.service 2>/dev/null
 }
 
 # --- Local SearXNG (optional 2nd web-search endpoint) ---
@@ -326,6 +356,16 @@ startollama() {
         fi
     fi
 
+    # Linux: prefer the systemd system service the official installer set up
+    # (runs as the `ollama` user, auto-starts at boot). Fall back to a
+    # user-owned `nohup ollama serve` like macOS.
+    if _ollama_systemd; then
+        _ollama_systemctl start || \
+            { echo "Ollama systemd service failed to start — check: systemctl status ollama"; return 1; }
+        echo "Ollama started (systemd ollama.service)"
+        return 0
+    fi
+
     # Apple Silicon perf tuning (Homebrew ollama formula's recommended flags):
     # flash attention + q8 KV cache → less memory and faster inference,
     # especially for large models. GPU/MLX acceleration itself is automatic.
@@ -342,6 +382,13 @@ stopollama() {
     if ! pgrep -f "$OLLAMA_PROC" > /dev/null; then
         echo "Ollama was not running"
         return 0
+    fi
+    # Linux: the systemd system service owns the process (runs as `ollama`) —
+    # a user-level pkill gets EPERM, so stop it the way it was started.
+    if _ollama_systemd; then
+        _ollama_systemctl stop && echo "Ollama stopped (systemd ollama.service)" && return 0
+        echo "Ollama systemd service failed to stop — check: systemctl status ollama" >&2
+        return 1
     fi
     pkill -f "$OLLAMA_PROC"
     # Wait for actual death, then SIGKILL — same as stopwebui. Without
@@ -434,6 +481,9 @@ awake_running() {
     [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && [[ "$(ps -o comm= -p "$p" 2>/dev/null)" == *caffeinate* ]]
 }
 start_caffeinate() {
+    # caffeinate is macOS-only. On Linux, don't fake it — the marker stays
+    # off and keep-awake reports that it's unsupported rather than erroring.
+    command -v caffeinate >/dev/null 2>&1 || { echo "Keep-awake is macOS-only (caffeinate not found) — skipping."; return 0; }
     awake_running && return 0
     mkdir -p "$(dirname "$AWAKE_PIDFILE")"
     nohup caffeinate -s >/dev/null 2>&1 &   # -s: prevent sleep only on AC power
@@ -447,6 +497,16 @@ stop_caffeinate() {
 ensure_awake() { [[ -f "$AWAKE_MARKER" ]] && start_caffeinate; }
 
 awake_cmd() {
+    # caffeinate is macOS-only; on Linux say so plainly instead of faking it.
+    if ! _ail_is_mac; then
+        case "${1:-status}" in
+            on|enable)  echo "☕ Keep-awake is macOS-only (needs caffeinate) — not supported on Linux." ;;
+            off|disable) rm -f "$AWAKE_MARKER"; echo "😴 Keep-awake: OFF" ;;
+            status)     echo "Keep-awake: unsupported on Linux (macOS caffeinate only)" ;;
+            *) echo "Usage: ailocal awake on|off|status"; return 1 ;;
+        esac
+        return 0
+    fi
     case "${1:-status}" in
         on|enable)
             mkdir -p "$(dirname "$AWAKE_MARKER")"; : > "$AWAKE_MARKER"
@@ -735,7 +795,8 @@ Backup (ONE slot — the state before the last upgrade/backup):
   restore [--yes]             Go back to the snapshot (--yes skips confirm)
 
 Autostart (start all services automatically at login):
-  autostart on                Install a LaunchAgent that runs 'ailocal start' at login
+  autostart on                macOS: LaunchAgent; Linux: systemd user unit
+                              (runs 'ailocal start' at login)
   autostart off               Remove it
   autostart status            Show whether it's enabled
 
@@ -745,12 +806,13 @@ LAN (reach the Ollama API from other computers — trusted networks only):
   lan status                  Show current exposure and bind address
 
 Keep-awake (stay reachable — stop the Mac idle-sleeping while it serves):
-  awake on                    Prevent idle sleep via caffeinate (persisted)
+  awake on                    Prevent idle sleep via caffeinate (persisted; macOS only)
   awake off                   Restore normal sleep
   awake status                Show whether it's enabled
 
 Auto-heal (fix Ollama's LAN/Tailscale bind after a sleep/wake automatically):
-  autoheal on                 LaunchAgent: check reachability every ${AUTOHEAL_INTERVAL:-120}s, restart if wedged
+  autoheal on                 macOS: LaunchAgent; Linux: systemd timer.
+                              Check reachability every ${AUTOHEAL_INTERVAL:-120}s, restart if wedged
                               (turned on automatically by 'lan on'; off by 'lan off')
   autoheal off                Remove it
   autoheal status             Show whether it's enabled
@@ -770,8 +832,70 @@ EOF
 AUTOSTART_LABEL="com.chati.ailocal"
 AUTOSTART_PLIST="$HOME/Library/LaunchAgents/$AUTOSTART_LABEL.plist"
 
+# systemd user unit (Linux). The unit runs in the user's systemd instance, which
+# starts at login like the macOS LaunchAgent. `ailocal start` backgrounds the
+# services itself, so the unit is a oneshot that keeps them alive via
+# RemainAfterExit; `ailocal stop` is the ExecStop teardown.
+AUTOSTART_UNIT="$HOME/.config/systemd/user/chati-ailocal.service"
+_AUTOSTART_PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+autostart_enable_linux() {
+    mkdir -p "$(dirname "$AUTOSTART_UNIT")" "$LOG_DIR"
+    cat > "$AUTOSTART_UNIT" <<UNIT
+[Unit]
+Description=chati local AI services (Ollama, OpenWebUI, SearXNG)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$AILOCAL_BIN start
+ExecStop=$AILOCAL_BIN stop
+Environment=PATH=$_AUTOSTART_PATH
+StandardOutput=append:$LOG_DIR/autostart.log
+StandardError=append:$LOG_DIR/autostart.log
+
+[Install]
+WantedBy=default.target
+UNIT
+    systemctl --user daemon-reload
+    if systemctl --user enable --now "$(basename "$AUTOSTART_UNIT")" 2>/dev/null; then
+        echo "Autostart ENABLED — Ollama, OpenWebUI and SearXNG will start at login."
+        echo "  (systemd user unit: $AUTOSTART_UNIT · log: $LOG_DIR/autostart.log)"
+        # Linger keeps the services alive after the last logout on a headless
+        # box; on a desktop session it's a harmless no-op. Best-effort.
+        loginctl enable-linger "$(id -un)" 2>/dev/null || true
+    else
+        echo "Autostart unit written; systemctl enable failed (is the systemd user manager running?)."
+    fi
+}
+
+autostart_disable_linux() {
+    systemctl --user disable --now chati-ailocal.service 2>/dev/null || true
+    rm -f "$AUTOSTART_UNIT"
+    systemctl --user daemon-reload 2>/dev/null || true
+}
+
+autostart_status_linux() {
+    if [[ -f "$AUTOSTART_UNIT" ]]; then
+        echo "Autostart: ENABLED  ($AUTOSTART_UNIT)"
+    else
+        echo "Autostart: disabled  (enable with: ailocal autostart on)"
+    fi
+}
+
 autostart_cmd() {
     local action="${1:-status}"
+    if ! _ail_is_mac; then
+        case "$action" in
+            on|enable)    autostart_enable_linux ;;
+            off|disable)  autostart_disable_linux ;;
+            status)       autostart_status_linux ;;
+            *) echo "Usage: ailocal autostart on|off|status"; return 1 ;;
+        esac
+        return 0
+    fi
     case "$action" in
         on|enable)
             mkdir -p "$(dirname "$AUTOSTART_PLIST")" "$LOG_DIR"
@@ -827,8 +951,72 @@ AUTOHEAL_LABEL="com.chati.ollama-heal"
 AUTOHEAL_PLIST="$HOME/Library/LaunchAgents/$AUTOHEAL_LABEL.plist"
 AUTOHEAL_INTERVAL="${AUTOHEAL_INTERVAL:-120}"
 
+# systemd user units (Linux): a oneshot service + a timer that fires it every
+# AUTOHEAL_INTERVAL seconds — the analogue of the LaunchAgent StartInterval.
+AUTOHEAL_UNIT="$HOME/.config/systemd/user/chati-ollama-heal.service"
+AUTOHEAL_TIMER="$HOME/.config/systemd/user/chati-ollama-heal.timer"
+
+autoheal_enable_linux() {
+    mkdir -p "$(dirname "$AUTOHEAL_UNIT")" "$LOG_DIR"
+    cat > "$AUTOHEAL_UNIT" <<UNIT
+[Unit]
+Description=chati Ollama LAN bind self-heal (one shot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$AILOCAL_BIN heal
+Environment=PATH=$_AUTOSTART_PATH
+StandardOutput=append:$LOG_DIR/ollama-heal.log
+StandardError=append:$LOG_DIR/ollama-heal.log
+UNIT
+    cat > "$AUTOHEAL_TIMER" <<TIMER
+[Unit]
+Description=chati Ollama LAN bind self-heal timer
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=$AUTOHEAL_INTERVAL
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target
+TIMER
+    systemctl --user daemon-reload
+    if systemctl --user enable --now "$(basename "$AUTOHEAL_TIMER")" 2>/dev/null; then
+        echo "Auto-heal ENABLED — every ${AUTOHEAL_INTERVAL}s it checks Ollama's LAN/Tailscale reachability and restarts it if a sleep/wake wedged the bind."
+        echo "  (systemd timer: $AUTOHEAL_TIMER · log: $LOG_DIR/ollama-heal.log)"
+        [[ -f "$LAN_MARKER" ]] || echo "  Note: 'lan on' is OFF, so heal is a no-op until you expose Ollama (ailocal lan on)."
+    else
+        echo "Auto-heal unit written; systemctl enable failed (is the systemd user manager running?)."
+    fi
+}
+
+autoheal_disable_linux() {
+    systemctl --user disable --now chati-ollama-heal.timer 2>/dev/null || true
+    rm -f "$AUTOHEAL_UNIT" "$AUTOHEAL_TIMER"
+    systemctl --user daemon-reload 2>/dev/null || true
+}
+
+autoheal_status_linux() {
+    if [[ -f "$AUTOHEAL_TIMER" ]]; then
+        echo "Auto-heal: ENABLED  (every ${AUTOHEAL_INTERVAL}s · $AUTOHEAL_TIMER)"
+    else
+        echo "Auto-heal: disabled  (enable with: ailocal autoheal on)"
+    fi
+}
+
 autoheal_cmd() {
     local action="${1:-status}"
+    if ! _ail_is_mac; then
+        case "$action" in
+            on|enable)    autoheal_enable_linux ;;
+            off|disable)  autoheal_disable_linux ;;
+            status)       autoheal_status_linux ;;
+            *) echo "Usage: ailocal autoheal on|off|status"; return 1 ;;
+        esac
+        return 0
+    fi
     case "$action" in
         on|enable)
             mkdir -p "$(dirname "$AUTOHEAL_PLIST")" "$LOG_DIR"

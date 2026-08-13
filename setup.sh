@@ -221,9 +221,22 @@ remove_all() {
     ok "Links removed"
 
     step "Removing the login autostart agent (if any)"
-    launchctl bootout "gui/$(id -u)/com.chati.ailocal" 2>/dev/null \
-        || launchctl unload "$HOME/Library/LaunchAgents/com.chati.ailocal.plist" 2>/dev/null || true
-    rm -f "$HOME/Library/LaunchAgents/com.chati.ailocal.plist"
+    # macOS: LaunchAgent. Linux: systemd user units (autostart + autoheal).
+    case "$OSTYPE" in
+        darwin*)
+            launchctl bootout "gui/$(id -u)/com.chati.ailocal" 2>/dev/null \
+                || launchctl unload "$HOME/Library/LaunchAgents/com.chati.ailocal.plist" 2>/dev/null || true
+            rm -f "$HOME/Library/LaunchAgents/com.chati.ailocal.plist" \
+                  "$HOME/Library/LaunchAgents/com.chati.ollama-heal.plist"
+            ;;
+        linux*)
+            systemctl --user disable --now chati-ailocal.service chati-ollama-heal.timer 2>/dev/null || true
+            rm -f "$HOME/.config/systemd/user/chati-ailocal.service" \
+                  "$HOME/.config/systemd/user/chati-ollama-heal.service" \
+                  "$HOME/.config/systemd/user/chati-ollama-heal.timer"
+            systemctl --user daemon-reload 2>/dev/null || true
+            ;;
+    esac
     ok "Autostart agent removed"
 
     step "Clearing LAN exposure and keep-awake"
