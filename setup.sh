@@ -36,6 +36,10 @@ WANT_PULL=1
 REMOVE_ALL=0
 REMOVE_WEBUI=0
 REMOVE_SEARXNG=0
+CLIENT_ONLY=0                    # 1 for --client / --client-minimal
+CLIENT_MODE=""                   # "full" (--client) or "minimal" (--client-minimal)
+CLIENT_HOST=""                   # optional remote Ollama host given after the flag
+CLIENT_SEARXNG=""                # optional remote SearXNG URL (--searxng) for /web
 ASSUME_YES=0
 MODEL_EXPLICIT=0                 # set to 1 when the user forces --model
 CHAT_MODEL="$DEFAULT_CHAT_MODEL"
@@ -88,7 +92,15 @@ By default it installs EVERYTHING: Homebrew deps, Ollama + a chat model,
 the OpenWebUI browser app, and a local SearXNG for /web — all started.
 
   ./setup.sh                brew deps + Ollama + model + OpenWebUI + SearXNG
-  ./setup.sh --minimal      CLI only — skip OpenWebUI and SearXNG
+  ./setup.sh --minimal      CLI only — skip OpenWebUI and SearXNG (still installs full deps)
+  ./setup.sh --client [HOST] [--searxng URL]
+                             FULL client (remote Ollama): chat + local OCR + /web
+                             via a remote SearXNG. No local server/models/WebUI.
+                             e.g. --client heather --searxng http://heather:8890
+  ./setup.sh --client-minimal [HOST]
+                             BARE client: only curl/jq/lynx/ollama-CLI. Chat only
+                             (no OCR, no /web). Smallest footprint for old machines.
+                             HOST optional for both (e.g. heather → heather:11434; set later with /host)
   ./setup.sh --no-webui     skip OpenWebUI only
   ./setup.sh --no-searxng   skip SearXNG only
   ./setup.sh --model NAME    force a chat model, skipping the memory-based pick
@@ -120,6 +132,11 @@ while [[ $# -gt 0 ]]; do
         --searxng)   WANT_SEARXNG=1 ;;   # accepted for compatibility (now default)
         --no-pull)   WANT_PULL=0 ;;
         --model)     CHAT_MODEL="${2:?--model needs a model name}"; MODEL_EXPLICIT=1; shift ;;
+        --client)    CLIENT_ONLY=1; CLIENT_MODE="full"
+                     if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
+        --client-minimal) CLIENT_ONLY=1; CLIENT_MODE="minimal"
+                     if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
+        --searxng)   CLIENT_SEARXNG="${2:?--searxng needs a URL}"; shift ;;
         --remove-all) REMOVE_ALL=1 ;;
         --remove-webui)   REMOVE_WEBUI=1 ;;
         --remove-searxng) REMOVE_SEARXNG=1 ;;
@@ -274,6 +291,96 @@ remove_searxng() {
     exit 0
 }
 
+# ---- CLIENT installs: use a remote Ollama, run nothing heavy locally --------
+# Two tiers, both offload inference to a remote Ollama (no local server, no
+# models pulled, no OpenWebUI, no LOCAL SearXNG service):
+#   --client          FULL client — also installs the OCR stack (Apple Vision +
+#                     tesseract/poppler/imagemagick/ghostscript/groovy) so /ocr
+#                     and /file on images/PDFs work, and can do /web by pointing
+#                     at a remote SearXNG URL.
+#   --client-minimal  BARE client — only curl/jq/lynx + the ollama CLI. Chat
+#                     only: no OCR, no /web. Tiny footprint for old machines.
+# Helper: write a single KEY=value line into .env, replacing any existing one.
+_env_set() {
+    local key="$1" val="$2" env="$REPO_ROOT/.env" tmp; tmp="$(mktemp)"
+    if [[ -f "$env" ]]; then
+        grep -vE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$env" > "$tmp" 2>/dev/null || : > "$tmp"
+    else : > "$tmp"; fi
+    printf 'export %s="%s"\n' "$key" "$val" >> "$tmp"
+    ( umask 077; mv "$tmp" "$env" )
+}
+client_install() {
+    local host="$CLIENT_HOST" full=0
+    [[ "$CLIENT_MODE" == "full" ]] && full=1
+
+    if (( full )); then
+        step "Full client install (remote Ollama + local OCR + /web via remote SearXNG)"
+        brew install curl jq lynx ollama tesseract tesseract-lang imagemagick ghostscript poppler groovy \
+            || die "Could not install client packages."
+        ok "Installed chat + OCR tools (no models, no local Ollama server, no OpenWebUI/SearXNG service)"
+    else
+        step "Minimal client install (remote Ollama, chat only — nothing heavy runs here)"
+        brew install curl jq lynx ollama || die "Could not install client packages."
+        ok "Installed curl, jq, lynx, ollama (CLI only — no models, no OCR, no /web)"
+    fi
+
+    mkdir -p "$HOME/logs" "$REPO_ROOT/conversation_histories"
+    chmod +x "$REPO_ROOT/chati" "$REPO_ROOT/ai_local/ailocal" \
+             "$REPO_ROOT/ola_chat/ola" "$REPO_ROOT/ola_chat/mola" \
+             "$REPO_ROOT/ola_chat/ola_model" "$REPO_ROOT/docr/docr" 2>/dev/null || true
+    local brew_bin; brew_bin="$(brew --prefix)/bin"
+    ln -sf "$REPO_ROOT/chati"            "$brew_bin/chati"   2>/dev/null
+    ln -sf "$REPO_ROOT/ai_local/ailocal" "$brew_bin/ailocal" 2>/dev/null
+    ok "Linked 'chati' onto your PATH"
+
+    # FULL: build the Apple Vision OCR helper (fast, reads HEIC; falls back to
+    # tesseract if swiftc is missing).
+    if (( full )) && command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
+        swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null \
+            && ok "Apple Vision OCR ready (docr/ocrvision)" \
+            || warn "Vision helper didn't compile — OCR will use tesseract."
+    fi
+
+    # Point at the remote Ollama, persisted in .env (survives restarts).
+    if [[ -n "$host" ]]; then
+        [[ "$host" != *:* ]] && host="$host:11434"     # default the port
+        _env_set OLLAMA_HOST "$host"
+        ok "Pointed at remote Ollama: $host (saved in .env)"
+        if curl -fsS --max-time 4 "http://$host/api/version" >/dev/null 2>&1; then
+            ok "Remote Ollama is reachable."
+        else
+            warn "Can't reach $host yet — chati will use it once it's up (or pick another with /host)."
+        fi
+    else
+        warn "No remote host given. Start chati and run:  /host <name-or-ip>   (e.g. /host heather)"
+    fi
+
+    # FULL: point /web at a remote SearXNG if one was given.
+    if (( full )); then
+        if [[ -n "$CLIENT_SEARXNG" ]]; then
+            _env_set SEARXNG_URLS "$CLIENT_SEARXNG"
+            ok "Web search (/web) points at: $CLIENT_SEARXNG (saved in .env)"
+        else
+            warn "No SearXNG given — /web is off until you set SEARXNG_URLS in .env (e.g. http://heather:8890)."
+            warn "Pass it with:  ./setup.sh --client HOST --searxng http://heather:8890"
+        fi
+    fi
+
+    cat <<EOF
+
+$(printf '\033[1;32m')✅ Client install complete!$(printf '\033[0m')
+────────────────────────────────────────────
+Start chatting:          chati
+Point at a server:       /host <name-or-ip>     (inside chati; saved to .env)
+List / switch servers:   /host
+This machine runs NO local Ollama server, models, or OpenWebUI — inference is on the remote.
+EOF
+    (( full )) \
+        && echo "OCR (/ocr, /file on images/PDFs) runs locally; /web uses the remote SearXNG you set." \
+        || echo "Chat only: no OCR and no /web on this machine (use --client for those)."
+    exit 0
+}
+
 if [[ "$REMOVE_ALL"     -eq 1 ]]; then remove_all;     fi
 if [[ "$REMOVE_WEBUI"   -eq 1 ]]; then remove_webui;   fi
 if [[ "$REMOVE_SEARXNG" -eq 1 ]]; then remove_searxng; fi
@@ -304,12 +411,21 @@ if [[ "$CHATI_PLATFORM" == macos ]]; then
     command -v brew >/dev/null 2>&1 || die "Homebrew still not on PATH. Open a new terminal and re-run ./setup.sh"
     ok "Homebrew ready ($(brew --version | head -1))"
 
+    # Thin client stops here: minimal deps + remote host, none of the heavy stack.
+    # (macOS only for now — the Linux thin-client path is a port TODO, see #1.)
+    if [[ "$CLIENT_ONLY" -eq 1 ]]; then client_install; fi
+
     # Single source of truth = installer/Brewfile. No second package list to drift.
     step "Installing Homebrew packages (from installer/Brewfile)"
     [[ -f "$BREWFILE" ]] || die "Brewfile missing at $BREWFILE — is the checkout complete?"
     brew bundle --file="$BREWFILE"
     ok "Packages installed / up to date"
 else
+    # Thin client on Linux isn't wired yet (client_install uses brew/Vision).
+    # Fail loud instead of silently running a full install. Tracked in #1.
+    if [[ "$CLIENT_ONLY" -eq 1 ]]; then
+        die "--client/--client-minimal isn't supported on Linux yet (port TODO, see #1). Run a full ./setup.sh, or point at a remote host later with /host."
+    fi
     # Linux (Debian/Ubuntu). Same tools as the Brewfile, via apt; groovy (docr's
     # PDF-graphics helper) is skipped here — docr falls back to tesseract.
     step "Installing packages with apt (you may be prompted for your password)"

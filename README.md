@@ -2,7 +2,7 @@
 
 An Ollama-centric, high-performance chat interface for the command line, with local AI service management and OpenWebUI integration.
 
-![version](https://img.shields.io/badge/version-1.27.1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![version](https://img.shields.io/badge/version-1.29.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 > **chati-linux** (this fork) is porting chati to Ubuntu/Linux while keeping macOS working (cross-platform via OS detection). Tracking: [#1](../../issues/1) · upstream: [cdamken/chati#30](https://github.com/cdamken/chati/issues/30).
 
@@ -125,7 +125,9 @@ Options (add any of these to the command above):
 
 | Option | Effect |
 |---|---|
-| `--minimal` | CLI only — skip **both** OpenWebUI and SearXNG (no Python/uv install) |
+| `--client [HOST] [--searxng URL]` | **Full client** (remote Ollama): chat + **local OCR** + `/web` via a remote SearXNG. No local Ollama server, models, or OpenWebUI. `--client heather --searxng http://heather:8890`. |
+| `--client-minimal [HOST]` | **Bare client** for old / low-disk machines: only `curl`, `jq`, `lynx` and the `ollama` CLI. Chat only (no OCR, no `/web`). Smallest footprint. `--client-minimal heather` → `heather:11434`; omit HOST and set it later with `/host`. |
+| `--minimal` | CLI only — skip **both** OpenWebUI and SearXNG (still installs the full Homebrew deps) |
 | `--no-webui` | skip OpenWebUI only |
 | `--no-searxng` | skip the local SearXNG only |
 | `--model NAME` | force a chat model, skipping the memory-based pick (e.g. `--model llama3.3:70b`) |
@@ -169,6 +171,12 @@ chati
 > Force a specific model with `./setup.sh --model NAME` (e.g. `llama3.3:70b` on a high-RAM Mac). If the configured model isn't installed (e.g. after switching machines), chati **auto-falls-back** to an installed model instead of failing every message — pick any model anytime with `/model`. For a faster `/web` triage router, also pull a small model: `ollama pull llama3.2:3b`.
 >
 > **Using a remote Ollama.** On a weak laptop you can offload to a beefier machine's Ollama. Point at it with **any reachable address** (a LAN IP like `192.168.1.50:11434`, a hostname, or a Tailscale name — Tailscale is just convenient, not required): set `OLLAMA_HOST` in `.env`, or save a persistent default from inside chati with **`/host <addr>`**. **`/host`** alone lists the servers it can reach (it scans localhost + Tailscale peers) plus any you've saved, and **`/host <n|name> session`** switches just for this session. chati sends both chat and `/model`/list/pull to that box, and each box has its own installed models.
+>
+> **Old or low-disk machine? Install as a client** so it runs nothing heavy locally (no Ollama server, no models, no OpenWebUI):
+> - `./setup.sh --client heather --searxng http://heather:8890` — **full client**: chat + local OCR (`/ocr`, `/file` on images/PDFs) + `/web` pointed at a remote SearXNG. Installs the OCR tools locally; the AI steps of `/web` run on the remote Ollama.
+> - `./setup.sh --client-minimal heather` — **bare client**: only `curl`, `jq`, `lynx` and the `ollama` CLI (tens of MB, no OCR, no `/web`). Chat needs just `bash` + `curl` + `jq`.
+>
+> `/web` never needs a *local* SearXNG — it's a URL you point at (`SEARXNG_URLS` in `.env`). Share the server's SearXNG by starting it network-exposed there (`SEARXNG_LOCAL_HOST=0.0.0.0 ailocal restart searxng`), or point at any other instance.
 
 ### 5. OpenWebUI — browser UI on top of Ollama
 

@@ -7,6 +7,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.29.0] - 2026-08-12
+
+### Changed
+- **Two client tiers now (both use a remote Ollama, run no local server/models/
+  WebUI):**
+  - **`--client [HOST] [--searxng URL]`** is now the **full** client: chat +
+    **local OCR** (Apple Vision + tesseract/poppler/imagemagick/ghostscript/
+    groovy, so `/ocr` and `/file` on images/PDFs work) + `/web` pointed at a
+    remote SearXNG (`--searxng http://heather:8890`, saved as `SEARXNG_URLS`).
+    The AI steps of `/web` run on the remote Ollama. No local SearXNG service.
+  - **`--client-minimal [HOST]`** is the previous bare thin client: only
+    `curl`, `jq`, `lynx` and the `ollama` CLI. Chat only (no OCR, no `/web`).
+    Smallest footprint for old / low-disk machines.
+  - New `--searxng URL` flag writes `SEARXNG_URLS` to `.env` (usable with
+    `--client`). `/web` never needs a *local* SearXNG — it's a URL you point at.
+
+## [1.28.0] - 2026-08-12
+
+### Added
+- **`./setup.sh --client [HOST]` — a thin-client install for old / low-disk
+  machines.** Installs ONLY what the chat path needs — `curl`, `jq`, `lynx` and
+  the `ollama` CLI (tens of MB) — and points chati at a **remote** Ollama. No
+  local Ollama server, no models pulled, no OpenWebUI, no SearXNG, and none of
+  the OCR stack (groovy/JVM, python, tesseract, imagemagick, ghostscript,
+  poppler). `--client heather` writes `OLLAMA_HOST=heather:11434` to `.env` and
+  checks reachability; omit HOST and set it later with `/host`. (`--minimal`
+  still installs the full Homebrew deps — it only skips the OpenWebUI/SearXNG
+  services — so `--client` is the one to use when disk is tight.)
+
+## [1.27.2] - 2026-08-11
+
+### Fixed
+- **`/lang ar` (and hi/ja/ko/zh) now reliably answers in that language.** The
+  forced-language directive injected the bare code ("Respond ONLY in ar"), which
+  small models sometimes read as a stray token and answered with one odd English
+  word ("point") instead of switching. Every supported code now maps to its full
+  English name in the directive ("Respond ONLY in Arabic"), so the instruction is
+  unambiguous. es/de/fr/pt/it/ru/en were already mapped; this adds ar, hi, ja,
+  ko, zh.
+
 ## [1.27.1] - 2026-08-11
 
 ### Fixed
