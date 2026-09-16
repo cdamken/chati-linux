@@ -200,6 +200,27 @@ test_ailocal_searxng_documented() {
 }
 run_test "ailocal exposes the searxng target" test_ailocal_searxng_documented
 
+test_update_applies_setup() {
+    # chati --update must APPLY what it pulls (run setup --update), not just pull.
+    grep -q 'setup.sh" --update' "$PROJECT_DIR/chati" \
+        || { echo "chati --update should run 'setup.sh --update' after a pull" >&2; return 1; }
+    # setup --update re-applies respecting the installed profile (derives webui/
+    # searxng from what's on disk, never forcing a full profile onto a client box).
+    grep -qE 'UPDATE_MODE=1' "$PROJECT_DIR/setup.sh" \
+        && grep -q 'HOME/openwebui' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh --update must derive the profile from what's installed" >&2; return 1; }
+    # --help documents both new flags.
+    local out; out=$(./setup.sh --help 2>&1) || return 1
+    assert_match "$out" "update.*respecting" "setup --update in help" \
+        && assert_match "$out" "force-webui" "setup --force-webui in help" || return 1
+    # The webui step is idempotent by default: the --force is gated behind
+    # FORCE_WEBUI, and a plain (no --force) invocation exists as the default path.
+    grep -q 'FORCE_WEBUI" -eq 1' "$PROJECT_DIR/setup.sh" \
+        && grep -qE 'ailocal" upgrade webui$' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh webui step should be idempotent, --force gated by FORCE_WEBUI" >&2; return 1; }
+}
+run_test "chati --update applies setup, idempotently (#70 follow-up)" test_update_applies_setup
+
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from
@@ -780,6 +801,7 @@ eval "$(awk '/^update_say_rate\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_write\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_read\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^load_active_settings\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^reload_settings_announce\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 
 # Factory baseline used by the #60 tests below.
 _write_builtin_baseline() {
@@ -851,6 +873,24 @@ test_returning_session_restores_own() {
 }
 run_test "returning to a saved session restores its settings (#60)" test_returning_session_restores_own
 
+test_switch_announces_shell_drop() {
+    # #60 follow-up: when a session change resets Shell/auto-accept OFF, the user
+    # must be TOLD — a silent drop made them think /sY was still armed after /new.
+    BUILTIN_SETTINGS_FILE="$SANDBOX/builtin_c"
+    DEFAULTS_SETTINGS_FILE="$SANDBOX/no_defaults_c"     # absent on purpose
+    HISTORY_DIR="$SANDBOX/hist_c"; mkdir -p "$HISTORY_DIR"
+    PREVIOUS_FILE="$SANDBOX/prev_c"
+    _write_builtin_baseline
+    echo "brand_new_session" > "$PREVIOUS_FILE"          # no _settings → resets to baseline
+    AGENT_MODE=ON AGENT_AUTOACCEPT=ON                    # user had armed /sY before /new
+    # Run in THIS shell (not $(...)) so the reset actually mutates AGENT_MODE,
+    # capturing the announcement via a file instead of a subshell.
+    local out; reload_settings_announce > "$SANDBOX/announce_c" 2>&1; out=$(cat "$SANDBOX/announce_c")
+    assert_eq "$AGENT_MODE" "OFF" "shell dropped after switch" \
+        && assert_match "$out" "Shell mode is OFF" "announced the drop"
+}
+run_test "session change announces Shell going OFF (#60)" test_switch_announces_shell_drop
+
 test_lang_codes_map_to_full_names() {
     # A bare code in "Respond ONLY in ar" is ambiguous — small models sometimes
     # answered with a stray English word instead of the language. Every
@@ -864,6 +904,50 @@ test_lang_codes_map_to_full_names() {
     return 0
 }
 run_test "every /lang code maps to a full language name" test_lang_codes_map_to_full_names
+
+eval "$(grep -E '^version_gt\(\) \{' "$PROJECT_DIR/chati")"
+test_version_gt() {
+    # Self-update comparison: B strictly newer than A. Must handle the 9→10 case.
+    version_gt 1.29.0 1.30.0 || { echo "1.30.0 > 1.29.0 expected" >&2; return 1; }
+    version_gt 1.9.0  1.10.0 || { echo "1.10.0 > 1.9.0 expected (numeric, not lexical)" >&2; return 1; }
+    version_gt 1.30.0 1.30.0 && { echo "equal versions must not compare greater" >&2; return 1; }
+    version_gt 1.30.0 1.29.1 && { echo "older must not compare greater" >&2; return 1; }
+    return 0
+}
+run_test "version_gt compares versions numerically (self-update)" test_version_gt
+
+# --- OpenWebUI login-less persistence (ailocal resolve_webui_auth) ---
+eval "$(awk '/^resolve_webui_auth\(\) \{/,/^}$/' "$PROJECT_DIR/ai_local/ailocal")"
+test_webui_auth_persists_loginless() {
+    local dir="$SANDBOX/webui_auth"; rm -rf "$dir"; mkdir -p "$dir"
+    local db="$dir/webui.db" marker="$dir/.loginless"
+
+    # 1. Fresh DB (none yet): must go login-less AND drop the marker.
+    unset WEBUI_AUTH
+    resolve_webui_auth "" "$marker" >/dev/null
+    assert_eq "$WEBUI_AUTH" "False" "fresh DB -> login-less" || return 1
+    [[ -f "$marker" ]] || { echo "fresh DB should leave a marker" >&2; return 1; }
+
+    # 2. Existing DB WITH our marker, no env: stays login-less (the reboot case).
+    touch "$db"; unset WEBUI_AUTH
+    resolve_webui_auth "$db" "$marker" >/dev/null
+    assert_eq "$WEBUI_AUTH" "False" "marker keeps login-less across restart" || return 1
+
+    # 3. Existing DB WITHOUT a marker, no env: leave WEBUI_AUTH unset (honour
+    #    the DB's own auth — never wedge a real auth DB, #6).
+    rm -f "$marker"; unset WEBUI_AUTH
+    resolve_webui_auth "$db" "$marker" >/dev/null
+    [[ -z "${WEBUI_AUTH:-}" ]] || { echo "unmarked DB must stay unset, got '$WEBUI_AUTH'" >&2; return 1; }
+
+    # 4. Explicit WEBUI_AUTH=True wins and CLEARS the marker.
+    touch "$marker"; WEBUI_AUTH=True
+    resolve_webui_auth "$db" "$marker" >/dev/null
+    assert_eq "$WEBUI_AUTH" "True" "explicit env wins" || return 1
+    [[ ! -f "$marker" ]] || { echo "auth=True should clear the login-less marker" >&2; return 1; }
+    unset WEBUI_AUTH
+    return 0
+}
+run_test "OpenWebUI stays login-less across reboots via marker (#6)" test_webui_auth_persists_loginless
 
 # --- web_query_needs_search router (failure-safe default) ---
 test_router_defaults_to_search() {

@@ -19,16 +19,120 @@ CHATI_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 source "$CHATI_DIR/lib_chat.sh"
 
-CHATI_VERSION="1.30.0"
+CHATI_VERSION="1.32.0"
 
 show_version() { echo "chati $CHATI_VERSION"; }
+
+# --- Self-update: check GitHub's latest RELEASE, update via git pull ---------
+# All bash + curl + (jq or grep). Opt out of the startup check with
+# CHATI_NO_UPDATE_CHECK=1; point at a fork with CHATI_REPO=owner/name.
+CHATI_REPO="${CHATI_REPO:-cdamken/chati}"
+
+# Latest release tag from GitHub, without the leading "v". Empty on any failure.
+chati_latest_version() {
+    local api="https://api.github.com/repos/$CHATI_REPO/releases/latest" tag
+    if command -v jq >/dev/null 2>&1; then
+        tag=$(curl -fsS --max-time "${CHATI_UPDATE_TIMEOUT:-4}" "$api" 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null)
+    else
+        tag=$(curl -fsS --max-time "${CHATI_UPDATE_TIMEOUT:-4}" "$api" 2>/dev/null \
+              | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+    fi
+    [[ -z "$tag" ]] && return 1
+    printf '%s' "${tag#v}"
+}
+
+# version_gt A B  → true (0) when B is strictly newer than A (semver via sort -V).
+version_gt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$2" ]]; }
+
+# Update the checkout to the latest. git pull for a checkout; tarball hint else.
+chati_self_update() {
+    local latest cur="$CHATI_VERSION"
+    latest=$(chati_latest_version) || { echo "chati: couldn't reach GitHub to check for updates." >&2; return 1; }
+    if ! version_gt "$cur" "$latest"; then
+        echo "✅ chati is up to date ($cur; latest release v$latest)."; return 0
+    fi
+    echo "⬆️  Updating chati $cur → $latest…"
+    if ! git -C "$CHATI_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "chati: $CHATI_DIR isn't a git checkout — download the release:" >&2
+        echo "   https://github.com/$CHATI_REPO/archive/refs/tags/v$latest.tar.gz" >&2
+        return 1
+    fi
+    if [[ -n "$(git -C "$CHATI_DIR" status --porcelain 2>/dev/null)" ]]; then
+        echo "chati: local changes in $CHATI_DIR — commit or stash them first, or force:" >&2
+        echo "   git -C \"$CHATI_DIR\" fetch origin && git -C \"$CHATI_DIR\" reset --hard origin/main" >&2
+        return 1
+    fi
+    local before after
+    before=$(git -C "$CHATI_DIR" rev-parse HEAD 2>/dev/null)
+    if ! git -C "$CHATI_DIR" pull --ff-only >/dev/null 2>&1; then
+        echo "chati: git pull failed. Try:  git -C \"$CHATI_DIR\" fetch origin && git -C \"$CHATI_DIR\" reset --hard origin/main" >&2
+        return 1
+    fi
+    after=$(git -C "$CHATI_DIR" rev-parse HEAD 2>/dev/null)
+    local newver; newver=$(cat "$CHATI_DIR/VERSION" 2>/dev/null || echo "$latest")
+    if [[ "$before" == "$after" ]]; then
+        echo "✅ chati is already at the latest code ($newver)."
+        return 0
+    fi
+    echo "✅ Pulled chati $newver. Applying changes…"
+    # A thin-client install (remote Ollama, set up with --client/--client-minimal)
+    # has no local server stack, and setup's server path would try to install one.
+    # Its code updates come from the pull alone, so skip setup there. Detect the
+    # client by a non-local OLLAMA_HOST in .env.
+    local is_client=0 oh
+    if [[ -f "$CHATI_DIR/.env" ]]; then
+        oh=$(grep -E '^[[:space:]]*(export[[:space:]]+)?OLLAMA_HOST=' "$CHATI_DIR/.env" | tail -1)
+        case "$oh" in
+            ""|*localhost*|*127.0.0.1*|*0.0.0.0*) ;;
+            *) is_client=1 ;;
+        esac
+    fi
+    if [[ "$is_client" -eq 1 ]]; then
+        echo "✅ Updated to chati $newver (client install; the pull is all that's needed). Restart chati to use it."
+        return 0
+    fi
+    # Full install: re-run setup in --update mode to apply the new code. It
+    # respects the installed profile (won't turn a --minimal box into a full one)
+    # and is idempotent (no heavy webui reinstall unless PyPI moved). This closes
+    # the old gap where `chati --update` pulled code but never applied it, so a
+    # change (config, wiring, a webui reset) never landed.
+    if [[ -x "$CHATI_DIR/setup.sh" ]]; then
+        if "$CHATI_DIR/setup.sh" --update --yes; then
+            echo "✅ Updated to chati $newver and applied. Restart chati to use it."
+        else
+            echo "⚠️  Updated to chati $newver, but applying setup hit a snag." >&2
+            echo "    Finish it by hand:  \"$CHATI_DIR/setup.sh\" --update" >&2
+            return 1
+        fi
+    else
+        echo "✅ Updated to chati $newver. Restart chati to use it."
+    fi
+}
+
+# One-line startup notice if a newer release exists. Throttled to once a day
+# (a timestamp under STATE_DIR), short timeout, never blocks or errors out.
+check_for_update_quiet() {
+    [[ -n "${CHATI_NO_UPDATE_CHECK:-}" ]] && return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    local f="$STATE_DIR/.last_update_check" now last
+    now=$(date +%s 2>/dev/null || echo 0); last=$(cat "$f" 2>/dev/null || echo 0)
+    (( now - last < ${CHATI_UPDATE_INTERVAL:-86400} )) && return 0
+    printf '%s' "$now" > "$f" 2>/dev/null || true
+    local latest; latest=$(chati_latest_version) || return 0
+    version_gt "$CHATI_VERSION" "$latest" \
+        && echo "🆕 chati v$latest is available (you have $CHATI_VERSION). Update:  chati --update"
+    return 0
+}
 
 # Parse CLI flags up-front so `chati --help`, `chati --version` and the
 # headless `chati search` subcommand work without entering the REPL.
 case "${1:-}" in
     -h|--help)
-        echo "Usage: chati [-h|--help] [-v|--version] [search <query...>]"
+        echo "Usage: chati [-h|--help] [-v|--version] [--check-update] [--update] [search <query...>]"
         echo "Interactive Ollama chat. Type /h once inside for command list."
+        echo ""
+        echo "  --check-update      Check GitHub for a newer release (prints, no changes)."
+        echo "  --update            Update this checkout to the latest release (git pull)."
         echo ""
         echo "  search <query...>   Headless web search via the SearXNG backend:"
         echo "                      prints results and exits (no REPL). For scripts,"
@@ -37,6 +141,16 @@ case "${1:-}" in
         exit 0 ;;
     -v|--version)
         show_version; exit 0 ;;
+    --update|--upgrade)
+        chati_self_update; exit $? ;;
+    --check-update|--check)
+        _lv=$(chati_latest_version) || { echo "chati: couldn't reach GitHub to check." >&2; exit 1; }
+        if version_gt "$CHATI_VERSION" "$_lv"; then
+            echo "🆕 chati v$_lv is available (you have $CHATI_VERSION). Update:  chati --update"
+        else
+            echo "✅ chati is up to date ($CHATI_VERSION; latest release v$_lv)."
+        fi
+        exit 0 ;;
     search|--search)
         # Headless one-shot web search. Reuses lib_web.sh's web_search (sourced
         # via lib_chat.sh above), so it hits the exact same SearXNG endpoints and
@@ -166,6 +280,20 @@ load_active_settings() {
     settings_read "$DEFAULTS_SETTINGS_FILE" 2>/dev/null || true
     local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
     [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" 2>/dev/null || true
+}
+# Reload the active session's settings AND tell the user when a switch turned
+# a security-relevant toggle OFF. Each session keeps its own settings (#60), so
+# /new and /switch reset Shell/auto-accept to this session's baseline — a good
+# safety default, but a SILENT one bit users who armed /sY and then /new'd and
+# assumed shell was still on. Announce the drop so the state is never a surprise.
+reload_settings_announce() {
+    local was_agent="$AGENT_MODE" was_auto="$AGENT_AUTOACCEPT"
+    load_active_settings
+    if [[ "$was_agent" == "ON" && "$AGENT_MODE" != "ON" ]]; then
+        echo "🐚 Shell mode is OFF in this session (each session keeps its own settings — /s to enable)."
+    elif [[ "$was_auto" == "ON" && "$AGENT_AUTOACCEPT" != "ON" ]]; then
+        echo "🛡️  Auto-accept is OFF in this session (/sY to re-arm)."
+    fi
 }
 # Clean-exit handler: flush command history AND the current session's settings.
 chati_on_exit() {
@@ -1200,6 +1328,7 @@ edit_prompt_in_editor() {
 
 show_version
 echo "------------------"
+check_for_update_quiet   # once/day: one-line notice if a newer release exists
 
 # Auto-start Ollama on launch if it's not already running. Silent if it
 # already is; just informational otherwise.
@@ -1407,9 +1536,9 @@ while true; do
                 fi
                 ;;
             /sessions)   "$MOLA_CMD" list ;;
-            /new)        persist_session_settings; "$MOLA_CMD" new "$cmd_args"; load_active_settings ;;
-            /switch)     persist_session_settings; "$MOLA_CMD" switch "$cmd_args"; load_active_settings ;;
-            /back)       persist_session_settings; "$MOLA_CMD" back; load_active_settings ;;
+            /new)        persist_session_settings; "$MOLA_CMD" new "$cmd_args"; reload_settings_announce ;;
+            /switch)     persist_session_settings; "$MOLA_CMD" switch "$cmd_args"; reload_settings_announce ;;
+            /back)       persist_session_settings; "$MOLA_CMD" back; reload_settings_announce ;;
             # $cmd_args is left unquoted on purpose so "3 new_name" splits
             # into two args — but disable globbing first (set -f) so a
             # name like "*" isn't expanded against the cwd, then restore.

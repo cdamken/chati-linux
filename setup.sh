@@ -41,6 +41,8 @@ CLIENT_MODE=""                   # "full" (--client) or "minimal" (--client-mini
 CLIENT_HOST=""                   # optional remote Ollama host given after the flag
 CLIENT_SEARXNG=""                # optional remote SearXNG URL (--searxng) for /web
 ASSUME_YES=0
+UPDATE_MODE=0                    # 1 for --update: re-apply respecting the installed profile
+FORCE_WEBUI=0                    # 1 for --force-webui: reinstall the OpenWebUI venv from scratch
 MODEL_EXPLICIT=0                 # set to 1 when the user forces --model
 CHAT_MODEL="$DEFAULT_CHAT_MODEL"
 
@@ -105,6 +107,10 @@ the OpenWebUI browser app, and a local SearXNG for /web — all started.
   ./setup.sh --no-searxng   skip SearXNG only
   ./setup.sh --model NAME    force a chat model, skipping the memory-based pick
   ./setup.sh --no-pull       do not pull a model (assume one already exists)
+  ./setup.sh --update        re-apply over an existing install, respecting its
+                             profile (touches OpenWebUI/SearXNG only if already
+                             installed; no heavy reinstalls). Run by `chati --update`.
+  ./setup.sh --force-webui   force a clean OpenWebUI venv reinstall (repair)
   ./setup.sh --remove-all    UNINSTALL everything this script set up (asks first)
   ./setup.sh --remove-webui   uninstall ONLY OpenWebUI (wipes its data/DB; fixes a
                              wedged UI). Ollama, models, chati, SearXNG untouched.
@@ -131,6 +137,8 @@ while [[ $# -gt 0 ]]; do
         --webui)     WANT_WEBUI=1 ;;     # accepted for compatibility (now default)
         --searxng)   WANT_SEARXNG=1 ;;   # accepted for compatibility (now default)
         --no-pull)   WANT_PULL=0 ;;
+        --update)    UPDATE_MODE=1 ;;   # re-apply over an existing install (used by `chati --update`)
+        --force-webui) FORCE_WEBUI=1 ;; # force a clean OpenWebUI venv reinstall
         --model)     CHAT_MODEL="${2:?--model needs a model name}"; MODEL_EXPLICIT=1; shift ;;
         --client)    CLIENT_ONLY=1; CLIENT_MODE="full"
                      if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
@@ -147,6 +155,18 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# ---- Re-apply mode (--update) ------------------------------------------------
+# `chati --update` runs `setup.sh --update` after pulling new code, so a code
+# update actually gets applied instead of the user having to remember to re-run
+# setup. A re-apply must NOT change the machine's profile: it re-applies config,
+# wiring and permissions, and touches OpenWebUI / SearXNG ONLY if they are
+# already installed — so it never turns a --minimal or --client box into a full
+# one. The initial install still honors the flags/defaults above.
+if [[ "$UPDATE_MODE" -eq 1 ]]; then
+    [[ -d "$HOME/openwebui" ]]            && WANT_WEBUI=1   || WANT_WEBUI=0
+    [[ -f "$HOME/searxng/settings.yml" ]] && WANT_SEARXNG=1 || WANT_SEARXNG=0
+fi
 
 # ---- Uninstall path (--remove-all) ------------------------------------------
 # Tears down everything setup.sh creates, so an install can be tested and
@@ -398,6 +418,19 @@ if [[ "$REMOVE_ALL"     -eq 1 ]]; then remove_all;     fi
 if [[ "$REMOVE_WEBUI"   -eq 1 ]]; then remove_webui;   fi
 if [[ "$REMOVE_SEARXNG" -eq 1 ]]; then remove_searxng; fi
 
+# ---- Install transcript log --------------------------------------------------
+# Capture the WHOLE install (every step, every `ollama pull`, every warning) to
+# a timestamped logfile. The console scrolls and callers often pipe us through
+# `tail`, so the early steps — including which models got pulled and by which
+# step — used to be unrecoverable after the fact. The log keeps all of it.
+# Uninstalls are intentionally NOT logged here (remove_all wipes ~/logs).
+INSTALL_LOG="$HOME/logs/chati_install_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p "$HOME/logs"
+# Tee stdout+stderr to the log while still showing it on the console.
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+echo "==> chati install log — $(date)"
+echo "    repo=$REPO_ROOT client_only=$CLIENT_ONLY${CLIENT_MODE:+/$CLIENT_MODE} webui=$WANT_WEBUI searxng=$WANT_SEARXNG pull=$WANT_PULL model=$CHAT_MODEL"
+
 echo "🚀 chati setup — repo at: $REPO_ROOT"
 
 # ---- 1. Platform check -------------------------------------------------------
@@ -647,7 +680,16 @@ fi
 WEBUI_STARTED=0
 if [[ "$WANT_WEBUI" -eq 1 ]]; then
     step "Installing OpenWebUI (browser UI)"
-    "$REPO_ROOT/ai_local/ailocal" upgrade webui --force
+    # Idempotent by default: `ailocal upgrade webui` (no --force) runs
+    # `uv pip install --upgrade`, which only downloads a new open-webui if PyPI
+    # has one and is a fast no-op otherwise. This is what makes re-running setup
+    # (e.g. every `chati --update`) cheap. --force wipes and reinstalls the venv
+    # from scratch (repair a broken install); opt in with `setup.sh --force-webui`.
+    if [[ "$FORCE_WEBUI" -eq 1 ]]; then
+        "$REPO_ROOT/ai_local/ailocal" upgrade webui --force
+    else
+        "$REPO_ROOT/ai_local/ailocal" upgrade webui
+    fi
     ok "OpenWebUI installed"
     step "Starting OpenWebUI (first boot can take a minute)"
     if "$REPO_ROOT/ai_local/ailocal" start webui; then
@@ -686,4 +728,5 @@ Uninstall everything:    ./setup.sh --remove-all
 EOF
 echo "  (Ollama has no auth — 'lan on' exposes it on your LAN/Tailscale only when you ask;"
 echo "   it also enables auto-heal so the bind survives the Mac sleeping. Off by default.)"
+echo "Install log:             ${INSTALL_LOG:-$HOME/logs/chati_install_*.log}"
 echo

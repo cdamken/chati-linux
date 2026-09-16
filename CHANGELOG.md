@@ -7,6 +7,112 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.32.0] - 2026-09-15
+
+### Changed
+- **`chati --update` now applies the code it pulls.** It used to `git pull` and
+  stop, so any change that needed setup (config, wiring, service tweaks) never
+  landed until the user remembered to re-run `setup.sh` by hand — the gap behind
+  "I updated but nothing changed". After a pull that actually moves HEAD, it now
+  runs `setup.sh --update` to apply the change; if the pull brought nothing new
+  it says so instead of claiming an update. A thin-client install (remote Ollama)
+  is detected and skips the server-side setup, since the pull is all it needs.
+- **`setup.sh --update`: re-apply respecting the installed profile.** A new mode
+  that re-applies config/wiring and updates only the components already present
+  (OpenWebUI/SearXNG touched only if installed), so a re-apply never turns a
+  `--minimal` or `--client` box into a full one. The initial install is unchanged.
+- **`setup.sh` no longer force-reinstalls OpenWebUI on every run.** The webui step
+  was `ailocal upgrade webui --force`, which wiped and rebuilt the venv every time
+  and made re-running setup slow. It now uses `ailocal upgrade webui` (a fast
+  no-op when PyPI has nothing newer); `--force` is opt-in via `setup.sh
+  --force-webui`. This is what makes the new `chati --update` → apply flow cheap.
+
+## [1.31.4] - 2026-09-15
+
+### Changed
+- **`chati --version` now matches the repo/release version again.** The CLI's
+  internal `CHATI_VERSION` had lagged behind the project `VERSION` (a release that
+  only touched `setup.sh` left the binary unchanged), so `chati --version` printed
+  an older number than the installed release. Across a fleet of machines that made
+  it hard to tell which version each box was really on. Both numbers are bumped
+  together here and kept in lockstep from now on.
+
+## [1.31.3] - 2026-09-15
+
+### Added
+- **`setup.sh` writes a full install transcript to `~/logs/chati_install_<timestamp>.log`.**
+  The console scrolls and callers often pipe the installer through `tail`, so the
+  early steps — including which models `ollama pull` fetched and by which step —
+  used to be unrecoverable after the fact. The whole install (every step, every
+  pull, every warning) is now teed to a timestamped logfile, and its path is
+  printed at the end. This is what let us confirm a clean install pulls only the
+  chat model plus the two `/web` helpers, so a stray `nomic-embed-text` came from
+  an outside client hitting an Ollama that a leaked `OLLAMA_HOST=0.0.0.0` had left
+  exposed — not from the installer. Uninstalls are not logged (`--remove-all`
+  wipes `~/logs`).
+
+## [1.31.2] - 2026-09-15
+
+### Fixed
+- **OpenWebUI stays login-less across reboots.** A login-less database that
+  ailocal created itself now keeps `WEBUI_AUTH=False` on every restart. Before,
+  OpenWebUI defaults `WEBUI_AUTH` to `True` when it's unset, and the autostart
+  LaunchAgent runs a bare `ailocal start` (no env), so on the next reboot an
+  existing DB silently got the login wall back — the recurring "why is OpenWebUI
+  asking me to log in again", with a `401` on `/ollama/api/tags` and no way in.
+  `startwebui` now drops a `.loginless` marker beside the DB the first time it
+  goes login-less (fresh DB, or an explicit `WEBUI_AUTH=False`) and re-applies
+  `WEBUI_AUTH=False` whenever that marker is present. Pre-existing auth DBs
+  without the marker are untouched, and an explicit `WEBUI_AUTH=…` in the
+  environment still wins. (ailocal 3.2.1)
+
+## [1.31.1] - 2026-09-15
+
+### Fixed
+- **`/new` and `/switch` now announce when Shell/auto-accept is turned OFF.**
+  Each session keeps its own settings (#60), so starting or switching sessions
+  resets Shell mode and auto-accept to that session's baseline — a deliberate
+  safety default so a fresh session never inherits an armed `/sY` from the
+  previous chat. But the reset was **silent**: after `/sY` then `/new`, users
+  believed shell mode was still on, and their next request was answered by a
+  plain chat model that (correctly) said it had no disk access. The session
+  change now prints `🐚 Shell mode is OFF in this session (/s to enable)` (or the
+  auto-accept equivalent) so the state is never a surprise.
+
+## [1.31.0] - 2026-09-02
+
+### Added
+- **Self-update: `chati --update` and `chati --check-update`, plus a once-a-day
+  startup notice.** All bash + curl + (jq or grep). `--check-update` compares
+  your version to GitHub's latest **release** and prints whether a newer one
+  exists; `--update` updates the checkout with `git pull --ff-only` (refuses if
+  you have local changes, and prints the tarball URL when it isn't a git
+  checkout). At startup chati checks at most once per day (short timeout, cached
+  under `STATE_DIR`) and, if a newer release is out, prints one line pointing to
+  `chati --update`. Opt out with `CHATI_NO_UPDATE_CHECK=1`; target a fork with
+  `CHATI_REPO=owner/name`. Version compare is numeric (`1.9.0` < `1.10.0`).
+
+## [1.30.0] - 2026-09-02
+
+### Changed
+- **Don't force OCR — route a file request by intent (#66).** Auto-OCR used to
+  fire whenever you named image/PDF files and OCR'd them regardless of intent
+  (slow, and big PDFs built multi-MB prompts). Now: compare / dedupe / size /
+  date gives a metadata table (size, modified, SHA-256) plus a real text diff
+  when files carry extractable text (no OCR; identical SHA-256 = duplicate);
+  read / analyze / extract or a bare file drop still OCRs; a file named with no
+  read/compare intent shows its metadata and offers `/ocr` instead of silently
+  OCR-ing.
+
+## [1.29.1] - 2026-09-02
+
+### Fixed
+- **A big OCR message no longer hits `ARG_MAX` (#65).** OCR-ing many files builds
+  one message that can be several MB; passed to `ola` as an argv it exceeded
+  macOS's 1 MB `ARG_MAX` and died with "Argument list too long". chati now writes
+  the message to a temp file (`OLA_MESSAGE_FILE`) and `ola` reads it, encoding the
+  turn with `jq --rawfile` instead of `--arg`.
+
 ## [1.29.0] - 2026-08-12
 
 ### Changed
