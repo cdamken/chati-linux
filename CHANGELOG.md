@@ -7,6 +7,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.33.0] - 2026-09-23
+
+### Added
+- **The installer ensures three shared models by default**, so every machine
+  in a multi-host pool runs the *same* models and work can be routed to any
+  box with comparable output: `gemma4:31b` (dense, max-quality general model),
+  `gemma4:26b` (faster MoE alternative) and `bge-m3` (RAG embeddings). These
+  are pulled alongside the RAM-selected chat model and the `/web` helpers.
+  - **Exact tags matter:** the installer pulls `gemma4:31b`, *not*
+    `gemma4:31b-it-qat` (a different, quantized model). Tooling that asks for
+    `gemma4:31b` gets that exact tag.
+  - **RAM guard:** the two `gemma4` models (~37 GB together) are auto-skipped
+    below 24 GB of RAM. A ~19 GB model can't load without headroom, so pulling
+    it would just waste disk. `bge-m3` (~1.2 GB) is always pulled.
+  - **New flags:** `--no-extra-models` pulls only `bge-m3` alongside the chat
+    model (skips the big pair); `--force-models` pulls the big pair even on a
+    low-RAM box. The setup summary and `--help` document the sizes.
+
+## [1.32.2] - 2026-09-23
+
+### Fixed
+- **`chati --search` no longer reports a broken backend as "No results
+  found."** When SearXNG answered `HTTP 200` with an empty result set *because
+  every engine was unavailable* (CAPTCHA / IP ban / rate-limit — the
+  `unresponsive_engines` list was non-empty), chati printed `No results found.`
+  and exited `0`, indistinguishable from a genuine empty. A consumer (a
+  pipeline, another agent) could not tell "searched, found nothing" from
+  "search is down" and kept running on empty context. A new
+  `_searxng_render_body` classifies an empty result set: engines answered →
+  genuine empty (`No results found.`, rc 0); engines were unavailable →
+  degraded backend (an `Error:` line naming the dead engines, rc 2) which then
+  fails over to the next endpoint. A real hit is never downgraded, even when
+  some engines were throttled.
+- **`chati --search` now carries the outcome in its exit code.** `0` when the
+  search actually ran (real hits *or* a genuine empty), `3` when the backend was
+  broken (all engines down / rate-limited / transport error). The diagnostic
+  `Error:` line goes to `stderr` so `stdout` stays results-only. Previously
+  `--search` always exited `0`, so a pipeline could not detect a dead search.
+
 ## [1.32.1] - 2026-09-21
 
 ### Fixed
