@@ -550,9 +550,22 @@ agent_cmd_is_safe() {
 speak_if_enabled() {
     local text="$1"
     [[ "$VOICE_MODE" == "ON" && -n "$text" ]] || return 0
-    local voice
-    voice=$(get_voice "$text")
-    echo "$text" | say -v "$voice" -r "$SAY_RATE" --interactive="$SAY_COLORS"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        local voice
+        voice=$(get_voice "$text")
+        echo "$text" | say -v "$voice" -r "$SAY_RATE" --interactive="$SAY_COLORS"
+        return 0
+    fi
+    # Linux has no `say`. Use speech-dispatcher or espeak if installed; otherwise
+    # skip quietly (voice output is best-effort, never fatal). No interactive
+    # color highlighting there — that is a macOS `say` feature.
+    if command -v spd-say >/dev/null 2>&1; then
+        spd-say -w -- "$text" >/dev/null 2>&1 || true
+    elif command -v espeak-ng >/dev/null 2>&1; then
+        espeak-ng -s "$SAY_RATE" -- "$text" >/dev/null 2>&1 || true
+    elif command -v espeak >/dev/null 2>&1; then
+        espeak -s "$SAY_RATE" -- "$text" >/dev/null 2>&1 || true
+    fi
 }
 
 # Dispatch a message to ola, capture the response, speak it if needed,

@@ -217,7 +217,8 @@ chati --upgrade
 **2. Ollama and OpenWebUI (the services, not this code):**
 
 ```bash
-brew upgrade ollama && chati --stop   # new Ollama binary; next chati launch auto-starts it
+# Ollama: macOS -> brew upgrade ollama ; Linux -> curl -fsSL https://ollama.com/install.sh | sh
+brew upgrade ollama && chati --stop   # (Linux: sudo systemctl restart ollama after the installer)
 chati --install                       # re-applies setup: upgrades OpenWebUI via uv (idempotent)
 ```
 
@@ -248,7 +249,7 @@ chati --status    # show which of the three are running (read-only)
 chati --doctor    # health check: version, Ollama, models, SearXNG, OpenWebUI
 ```
 
-There is deliberately **no** manual start/restart for Ollama or SearXNG — they come up on their own. `chati --webui` restarts the stack if you need to bounce it (for example after `brew upgrade ollama`: run `chati --stop` so the next launch spawns the new runner binary, or just `chati --webui`).
+There is deliberately **no** manual start/restart for Ollama or SearXNG — they come up on their own (on Linux, Ollama's systemd service auto-starts at boot and `chati` drives it with `systemctl`). `chati --webui` restarts the stack if you need to bounce it. After upgrading the Ollama binary, pick up the new runner with `chati --stop` then relaunch on macOS, or `sudo systemctl restart ollama` on Linux.
 
 ### Installing / upgrading OpenWebUI
 
@@ -278,19 +279,27 @@ The slot lives at `~/openwebui_backups/previous/` and includes the database (con
 
 ### Running on an always-on server
 
-chati 1.36 dropped the old `ailocal` conveniences for autostart / LAN exposure / keep-awake in favor of the three-command model. On a shared server you set the same things up directly:
+chati 1.36 dropped the old `ailocal` conveniences for autostart / LAN exposure / keep-awake in favor of the three-command model. On a shared server you set the same things up directly. A **Linux** box (the usual server) is the simple case because the official Ollama installer already runs it as a systemd service:
 
-- **Expose Ollama on the LAN / Tailscale.** Start it bound to all interfaces: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`. On Tailscale, connect from clients by the MagicDNS name (`export OLLAMA_API=http://your-mac.your-tailnet.ts.net:11434`) — stable across IP changes and private to your devices.
-  > ⚠️ **Ollama has no authentication.** Only expose it on a trusted network or over Tailscale. This exposes only Ollama; OpenWebUI/SearXNG stay on localhost.
-- **Start at login.** Add your own `~/Library/LaunchAgents` plist that runs `ollama serve` (and `chati --webui` if you want the UI up) through a login shell.
-- **Keep the Mac awake while serving.** `caffeinate -s` (no sudo; only while on AC power), or system-level `sudo pmset -c sleep 0 disablesleep 1` for a plugged-in server. A Mac in low-power sleep can look alive (`/api/tags` responds) yet return empty generations.
+- **Expose Ollama on Tailscale (recommended).** On Linux, point the systemd service at the interface with a drop-in and restart it:
+  ```bash
+  sudo systemctl edit ollama    # add:  [Service]\n Environment=OLLAMA_HOST=<tailscale-ip>:11434
+  sudo systemctl restart ollama
+  ```
+  On macOS, start it bound instead: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`. From clients, connect by the Tailscale MagicDNS name (`export OLLAMA_API=http://your-host.your-tailnet.ts.net:11434`) — stable across IP changes and private to your devices.
+  > ⚠️ **Ollama has no authentication.** Bind it to the Tailscale IP (not `0.0.0.0`) so it stays limited to your tailnet, and open the port only on `tailscale0` (`sudo ufw allow in on tailscale0 to any port 11434`). This exposes only Ollama; OpenWebUI/SearXNG stay on localhost.
+- **Start at boot/login.** Linux: Ollama's systemd service already auto-starts at boot; for the UI add a systemd user unit (`~/.config/systemd/user/`) that runs `chati --webui`. macOS: a `~/Library/LaunchAgents` plist that runs it through a login shell.
+- **Keep the machine awake while serving.** Linux server: disable sleep (`sudo systemctl mask sleep.target suspend.target`) or wrap long jobs in `systemd-inhibit`. macOS: `caffeinate -s` (only on AC power), or `sudo pmset -c sleep 0 disablesleep 1`. A host in low-power sleep can look alive (`/api/tags` responds) yet return empty generations.
 
 **Stale bind after an Ollama upgrade or after sleep.** If the server answers on `localhost` but clients get `Connection reset by peer` (errno 54) or `Empty reply from server`, a stale `ollama serve` is still running the old binary (or wedged after sleep). Restart it so the current binary takes over:
 
 ```bash
-pkill -f "ollama serve"
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-curl -sS http://<server-ip>:11434/api/version   # verify from the server host
+# Linux (systemd service):
+sudo systemctl restart ollama
+# macOS (nohup'd process):
+pkill -f "ollama serve"; OLLAMA_HOST=0.0.0.0:11434 ollama serve
+# verify from the server host:
+curl -sS http://<server-ip>:11434/api/version
 ```
 
 See [#52](https://github.com/cdamken/chati/issues/52) and [#55](https://github.com/cdamken/chati/issues/55).
@@ -376,16 +385,16 @@ near-instant while keeping a big model for the final answer.
 | `MAX_COMPRESS_CHARS`      | `10000`                       | Cap on context the compressor reads                           |
 | `WEB_CACHE_DIR`           | `~/chati/.web_cache`           | Parent dir for per-turn `turn.XXXXXX` scratch dirs (wiped after each turn) |
 
-### Apple Silicon acceleration
+### GPU acceleration
 
-On Apple Silicon, Ollama uses the GPU **automatically** (Metal, and the MLX runtime bundled with the Homebrew build) — there is nothing to "turn on". When chati starts Ollama it additionally sets two performance flags recommended by the Homebrew formula, so large models use less memory and run faster:
+On **Apple Silicon**, Ollama uses the GPU automatically (Metal, plus the MLX runtime in the Homebrew build) — nothing to turn on. When chati starts Ollama on macOS it also sets two performance flags recommended by the Homebrew formula:
 
 | Variable                  | Default   | Purpose                                                              |
 |---------------------------|-----------|---------------------------------------------------------------------|
 | `OLLAMA_FLASH_ATTENTION`  | `1`       | Flash attention — faster, lower memory                              |
 | `OLLAMA_KV_CACHE_TYPE`    | `q8_0`    | Quantize the KV cache to 8-bit — big memory saving on long contexts |
 
-Export different values before starting a service to override them. Keeping Ollama current (`brew upgrade ollama`) is what pulls in newer MLX/Metal improvements.
+On **Linux with an NVIDIA GPU**, Ollama uses CUDA automatically once the NVIDIA driver + CUDA runtime are installed (`nvidia-smi` should list the card; the systemd service then picks it up). chati does not set the two flags above on Linux — the systemd service owns Ollama's environment, so set them there with a drop-in (`sudo systemctl edit ollama`) if you want them. Keep Ollama current with `brew upgrade ollama` (macOS) or the official Linux installer.
 
 ---
 
