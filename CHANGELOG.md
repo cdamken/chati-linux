@@ -7,6 +7,168 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.37.0] - 2026-10-22
+
+Commands are dashed again. A command carries a `--`; a bare word is reserved
+for a parameter you pass (none defined yet, but the slot is kept free).
+
+### Changed
+- **Every command takes a dash:** `chati --install`, `--upgrade`, `--webui`,
+  `--stop`, `--status`, `--doctor`, `--search <query>`, `--check-update`, plus
+  `--help`/`--version`. This replaces the dashless verbs from 1.36. The rule is
+  simple: with a dash it's a command, without a dash it's data for a command, so
+  the bare-word position stays open for a future parameter.
+- A known command typed without its dash (e.g. `chati status`) now prints a
+  one-line pointer to the dashed form and exits non-zero; a bare word that is no
+  command is rejected the same way; neither ever drops you into the chat REPL.
+  Only a bare `chati` with no arguments starts the interactive chat.
+- The dispatcher resolves `--name` to `libexec/chati-name`; docs, help text and
+  the README are updated throughout. The README's stale `ailocal` sections (gone
+  since 1.36) are rewritten to the three-command model, with manual equivalents
+  for the dropped server conveniences (LAN exposure, autostart, keep-awake).
+
+### Note
+- This is the last release reachable with the dashless `chati upgrade`: run it
+  on a 1.36 box to pull this update; afterwards the command is `chati --upgrade`.
+
+## [1.36.2] - 2026-10-22
+
+### Fixed
+- **A removed dashed flag no longer silently launches the chat.** On a machine
+  already on 1.36, typing the old `chati --upgrade` (or `--update`, `--install`,
+  `--doctor`, `--search`, `--status`, `--stop`, `--webui`) fell through the flag
+  parser and started the interactive REPL instead of doing anything. Any
+  unrecognized leading-dash argument now prints a one-line pointer to the
+  dashless verb (e.g. `use: chati upgrade`) and exits non-zero, and an unknown
+  `--flag` is reported as such. The dashless verbs themselves are unchanged.
+
+## [1.36.1] - 2026-10-22
+
+### Fixed
+- **SearXNG install now has uv own the Python too.** `install_searxng.sh` runs
+  `uv python install 3.12` before building the venv, so a later `brew autoremove`
+  can't delete the interpreter out from under it. This is the same robustness fix
+  1.36.0 added for OpenWebUI, and it is the breakage that left granian pointing at
+  a missing `python@3.12`. Re-run the installer to repair an already-broken venv.
+
+## [1.36.0] - 2026-10-22
+
+One command, three services, no `ailocal`. chati now manages the whole local
+stack itself, and the old `ailocal` service manager is gone.
+
+### Added
+- **A single `chati` entry point with a git-style dispatcher.** `chati <word>`
+  runs `libexec/chati-<word>`, so subcommands stay small and there is no monolith.
+- **Three service commands, by design the only ones you need:**
+  - `chati webui` starts the browser UI (and Ollama under it).
+  - `chati stop` stops OpenWebUI, SearXNG, and Ollama.
+  - `chati status` reports all three, read-only.
+  Ollama starts on demand when you launch chati; SearXNG starts on demand when
+  you use `/web`. There is deliberately **no** manual start/restart for them.
+- **`chati install` and `chati upgrade`** (both dashless): one front door to
+  `setup.sh` for first install and for pulling + applying the latest release.
+- **`chati doctor`** for a quick health check of the stack.
+- **`installer/install_webui.sh`** now owns the OpenWebUI venv install/upgrade,
+  plus `backup` and `restore` (integrity-checked before overwriting live data).
+  uv now **owns the Python** (`uv python install 3.11`), so a later
+  `brew autoremove` can't delete the interpreter out from under the venv.
+
+### Removed
+- **`ai_local/ailocal` is deleted.** Its OpenWebUI install/backup/restore moved
+  into `installer/install_webui.sh` (ported verbatim: external `DATA_DIR`, secret
+  key outside the repo, backup-before-upgrade). Its LAN-exposure and keep-awake
+  extras are dropped as outside the three-command model.
+- **Dashed command aliases are gone:** use `chati upgrade` (not `--update` /
+  `--upgrade`), `chati status`/`chati stop` for services, and `chati search`
+  stays as the headless query. This is the last release where `chati --upgrade`
+  still works, since updating *to* 1.36 runs the old code.
+
+### Changed
+- `/web` auto-start and `setup.sh` now drive SearXNG and OpenWebUI through the
+  new commands and `chati_start_searxng`, not through `ailocal`.
+
+## [1.35.0] - 2026-10-21
+
+### Added
+- **`/web` now auto-starts a local SearXNG that's down.** Toggling `/web` runs
+  the backend preflight; if a configured endpoint is local (localhost/127.0.0.1)
+  and not answering, chati starts it and re-checks instead of refusing the mode,
+  the same way it already auto-starts a local Ollama. A remote-only config is a
+  no-op (a cloud SearXNG can't be started from here). The headless `chati search`
+  stays a pure query.
+- **A shellcheck ratchet lint stage in the test suite.** `shellcheck -x -S warning`
+  runs over the bash entry points and fails if any file rises above a per-file
+  ceiling, so warning-level regressions can only come down. Skips with a notice
+  when shellcheck isn't installed (it's a dev-only tool).
+
+### Fixed
+- **`setup.sh --client HOST --searxng URL` now actually sets the client's
+  SearXNG.** The arg parser had `--searxng` twice in its `case`; the first arm
+  shadowed the second, so the URL was never captured (shellcheck SC2221/2222).
+
+### Removed
+- **Dead `GraphPdfOcr.groovy` reference implementation and the `groovy`
+  dependency.** No script invoked it (`docr/docr` is the real OCR engine). A new
+  bash-only guard in the test suite flags any scripting runtime (python/perl/
+  ruby/node/php/groovy) invoked from the shipped shell scripts outside a small
+  allowlist.
+
+## [1.33.2] - 2026-09-24
+
+### Changed
+- **`/s` now asks `Execute? (y/N)` for EVERY command, read-only ones included.**
+  Verification mode used to auto-run whitelisted read-only commands (`ls`, `find`,
+  `grep`, `git status`…) with no prompt, so `/s` often executed things without
+  asking — surprising, since its whole point is that you approve each command.
+  Now every proposed command waits for your `y` in `/s`; commands that could
+  modify files, processes, network or system still show a `⚠️` warning first, so
+  the risky ones stand out. `/sY` is unchanged: it runs everything without asking.
+  The read-only classifier stays, but now only decides whether to show the
+  warning, never whether to skip the prompt (`CHATI_AGENT_CONFIRM=all` is gone —
+  confirming every command is the default).
+
+## [1.34.1] - 2026-10-14
+
+### Fixed
+- **"Thinking: OFF" now actually disables the model's reasoning, fixing an
+  intermittent "Empty response" with reasoning models (e.g. `gemma4:26b`).** A
+  reasoning model thinks by default and splits its output into a `thinking`
+  channel plus `content`; `ola` reads only `content`. With Thinking OFF the
+  payload previously *omitted* the `think` flag, so the model still reasoned and,
+  under a tight `num_predict` or a long context, could spend its whole budget
+  thinking and return empty content — which chati surfaced as
+  `Empty response from <model>. The model may be overloaded or misconfigured.`
+  `ola` now always sends `think` explicitly (`false` when OFF), so the answer
+  lands in `content`. Harmless on non-reasoning models. (#86)
+
+## [1.34.0] - 2026-10-07
+
+### Added
+- **`docr` now has a selectable OCR engine (`-e/--engine`).** `tesseract`
+  (default) keeps the old behavior; `vision` runs Apple Vision via the bundled
+  `ocrvision` binary (best character accuracy on accents/photos, reads PDF/HEIC
+  directly); `olmocr2` runs a local Ollama vision-LLM that reconstructs tables
+  and structure as text (for dosage tables and layout-heavy scans). Non-tesseract
+  engines skip tesseract's multi-profile DPI search, so they don't pay for probing
+  they can't use. `-o/--output <dir>` writes OCR files to a chosen directory
+  instead of an `OCR_OUTPUTS` folder next to the input, keeping artifacts out of
+  an indexed corpus tree.
+
+### Fixed
+- **Auto-OCR no longer hijacks a turn that merely mentions a folder.** Naming a
+  folder in a message with no read/OCR intent (a code review, or an output dir
+  like `~/Downloads`) expanded it to its image/PDF files, and the "too many to
+  OCR automatically" guard fired on the file count alone. The count guard now
+  lives inside the read/paths-intent branch, and a `no_folders` mode feeds the
+  "named but not OCR'd" hint only files named explicitly — so a folder mentioned
+  in passing is left alone.
+- **The per-session shell/auto-accept reset notice is now unmissable.** Changing
+  sessions resets `/s`/`/sY` to the new session's baseline (OFF) by design, but
+  the one-line notice was easy to miss, so users blamed whatever command they ran
+  next. The notice now names the cause (you armed it in the session you left) and
+  the fix (`/s` here, or `/back` to return to the armed session). No behavior
+  change.
+
 ## [1.33.1] - 2026-09-23
 
 ### Fixed

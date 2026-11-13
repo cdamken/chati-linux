@@ -106,7 +106,9 @@ phase "PHASE 1: syntax + smoke"
 
 test_bash_syntax() {
     local f
-    for f in chati lib_chat.sh lib_web.sh ola_chat/ola ola_chat/mola ola_chat/ola_model ai_local/ailocal setup.sh installer/install_searxng.sh tests/run_tests.sh; do
+    for f in chati chati-common.sh lib_chat.sh lib_web.sh ola_chat/ola ola_chat/mola ola_chat/ola_model \
+             libexec/chati-status libexec/chati-stop libexec/chati-webui libexec/chati-install libexec/chati-doctor \
+             setup.sh installer/install_searxng.sh installer/install_webui.sh tests/run_tests.sh; do
         bash -n "$f" || { echo "$f failed bash -n"; return 1; }
     done
 }
@@ -139,6 +141,27 @@ test_chati_version() {
 }
 run_test "chati --version prints a version" test_chati_version
 
+test_bareword_and_unknown_dont_launch_chat() {
+    # Commands are dashed. A bare word (reserved for a future parameter, none
+    # defined yet) and an unknown --flag must NOT fall through to the chat REPL:
+    # they error with guidance and a non-zero exit. Only a bare `chati` starts chat.
+    local out
+    # A known command typed WITHOUT its dash points at the dashed form.
+    out=$(./chati status </dev/null 2>&1); [[ $? -eq 2 ]] || { echo "bare 'status' should exit 2" >&2; return 1; }
+    assert_match "$out" "chati --status" "bare command points to the dashed form" || return 1
+    # An unrelated bare word is not a command.
+    out=$(./chati frobnicate </dev/null 2>&1); [[ $? -eq 2 ]] || { echo "bare 'frobnicate' should exit 2" >&2; return 1; }
+    assert_match "$out" "commands start with --" "bare word is rejected with guidance" || return 1
+    # An unknown dashed flag is reported as unknown.
+    out=$(./chati --bogus </dev/null 2>&1); [[ $? -eq 2 ]] || { echo "--bogus should exit 2" >&2; return 1; }
+    assert_match "$out" "unknown command" "unknown --flag is reported" || return 1
+    # None of these may print the REPL banner.
+    if printf '%s' "$out" | grep -q "Current Chati Settings"; then
+        echo "an invalid argument launched the chat REPL" >&2; return 1
+    fi
+}
+run_test "bare words and unknown flags guide, never launch chat" test_bareword_and_unknown_dont_launch_chat
+
 test_mola_help() {
     local out
     out=$(./ola_chat/mola --help 2>&1) || return 1
@@ -153,52 +176,58 @@ test_ola_model_help() {
 }
 run_test "ola_model --help exits 0" test_ola_model_help
 
-test_ailocal_help_version() {
+test_chati_status_runs() {
+    # Read-only: just pgrep checks, safe anywhere. The three services chati
+    # cares about must all be reported.
     local out
-    out=$(./ai_local/ailocal --help 2>&1) || return 1
-    assert_match "$out" "Unified AI Service Manager" "ailocal --help" || return 1
-    out=$(./ai_local/ailocal --version 2>&1) || return 1
-    assert_match "$out" "ailocal [0-9]+\.[0-9]+" "ailocal --version"
+    out=$(./chati --status 2>&1) || return 1
+    assert_match "$out" "Ollama" "status reports Ollama" \
+        && assert_match "$out" "OpenWebUI" "status reports OpenWebUI" \
+        && assert_match "$out" "SearXNG" "status reports SearXNG"
 }
-run_test "ailocal --help and --version exit 0" test_ailocal_help_version
+run_test "chati status reports the three services" test_chati_status_runs
 
-test_ailocal_status_runs() {
-    # Read-only: just pgrep checks, safe anywhere.
-    local out
-    out=$(./ai_local/ailocal status 2>&1) || return 1
-    assert_match "$out" "Ollama:" "status output shape" \
-        && assert_match "$out" "OpenWebUI:" "status output shape"
+test_service_commands_present() {
+    # The three user-facing service commands exist and are executable.
+    local s
+    for s in status stop webui install; do
+        [[ -x "$PROJECT_DIR/libexec/chati-$s" ]] \
+            || { echo "libexec/chati-$s missing or not executable" >&2; return 1; }
+    done
+    # No manual start/restart for ollama/searxng by design — those stubs are gone.
+    for s in ollama searxng restart start; do
+        [[ -e "$PROJECT_DIR/libexec/chati-$s" ]] \
+            && { echo "libexec/chati-$s should not exist (no manual start/restart)" >&2; return 1; }
+    done
+    return 0
 }
-run_test "ailocal status reports both services" test_ailocal_status_runs
+run_test "the three service commands exist, no manual start/restart" test_service_commands_present
 
-test_ailocal_verb_target_standard() {
-    # The help must document the VERB [TARGET] standard and the
-    # single-slot backup/restore pair; bad targets must be rejected
-    # with a clear error (not fall through silently).
-    local out
-    out=$(./ai_local/ailocal --help 2>&1) || return 1
-    assert_match "$out" "start +\[target\]" "start verb documented" || return 1
-    assert_match "$out" "restart \[target\]" "restart verb documented" || return 1
-    assert_match "$out" "backup" "backup documented" || return 1
-    assert_match "$out" "restore \[--yes\]" "restore documented" || return 1
-    if ./ai_local/ailocal start nonsense >/dev/null 2>&1; then
-        echo "expected 'start nonsense' to fail" >&2
-        return 1
-    fi
+test_install_webui_guards() {
+    # The OpenWebUI installer must keep the hard-won safety: a backup BEFORE the
+    # upgrade, uv OWNING the Python (survives brew autoremove), and a restore
+    # that integrity-checks the snapshot before overwriting live data.
+    local f="$PROJECT_DIR/installer/install_webui.sh"
+    [[ -x "$f" ]] || { echo "install_webui.sh missing" >&2; return 1; }
+    grep -q 'create_backup' "$f"            || { echo "no backup-before-upgrade" >&2; return 1; }
+    grep -q 'uv python install' "$f"        || { echo "uv must own the Python (uv python install)" >&2; return 1; }
+    grep -q 'integrity_check' "$f"          || { echo "restore must integrity-check the backup" >&2; return 1; }
+    grep -q 'DATA_DIR\|OPENWEBUI_DATA_DIR' "$f" || { echo "external DATA_DIR fix lost" >&2; return 1; }
 }
-run_test "ailocal follows the VERB TARGET standard" test_ailocal_verb_target_standard
+run_test "install_webui.sh keeps backup + uv-owned Python + safe restore" test_install_webui_guards
 
-test_ailocal_searxng_documented() {
-    # ailocal must know the searxng target and offer the install path.
-    local out; out=$(./ai_local/ailocal --help 2>&1) || return 1
-    assert_match "$out" "searxng" "searxng target in help" \
-        && assert_match "$out" "install_searxng" "install script referenced"
-    # Unknown target still errors clearly (dispatch didn't get sloppy).
-    if ./ai_local/ailocal start bogus >/dev/null 2>&1; then
-        echo "start bogus should fail" >&2; return 1
-    fi
+test_setup_searxng_case_not_shadowed() {
+    # Regression (#88): --searxng appeared twice in the arg case; the first match
+    # (WANT_SEARXNG=1) shadowed the second, so `--client H --searxng URL` never
+    # set CLIENT_SEARXNG. The merged case must be unique AND capture the URL.
+    local n; n=$(grep -cE '^[[:space:]]*--searxng\)' "$PROJECT_DIR/setup.sh")
+    [[ "$n" -eq 1 ]] || { echo "expected exactly one --searxng) case, found $n" >&2; return 1; }
+    # The single case both enables searxng and captures the optional client URL.
+    awk '/^[[:space:]]*--searxng\)/{f=1} f{print} /;;[[:space:]]*$/{if(f)exit}' \
+        "$PROJECT_DIR/setup.sh" | grep -q 'CLIENT_SEARXNG=' \
+        || { echo "--searxng case must capture CLIENT_SEARXNG" >&2; return 1; }
 }
-run_test "ailocal exposes the searxng target" test_ailocal_searxng_documented
+run_test "setup.sh --searxng case is unique and captures the URL" test_setup_searxng_case_not_shadowed
 
 test_update_applies_setup() {
     # chati --update must APPLY what it pulls (run setup --update), not just pull.
@@ -216,7 +245,7 @@ test_update_applies_setup() {
     # The webui step is idempotent by default: the --force is gated behind
     # FORCE_WEBUI, and a plain (no --force) invocation exists as the default path.
     grep -q 'FORCE_WEBUI" -eq 1' "$PROJECT_DIR/setup.sh" \
-        && grep -qE 'ailocal" upgrade webui$' "$PROJECT_DIR/setup.sh" \
+        && grep -qE 'install_webui\.sh"$' "$PROJECT_DIR/setup.sh" \
         || { echo "setup.sh webui step should be idempotent, --force gated by FORCE_WEBUI" >&2; return 1; }
 }
 run_test "chati --update applies setup, idempotently (#70 follow-up)" test_update_applies_setup
@@ -225,7 +254,8 @@ test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from
     # the script so the test tracks it.
-    eval "$(grep '^OLLAMA_PROC=' "$PROJECT_DIR/ai_local/ailocal")"
+    eval "$(grep '^CHATI_OLLAMA_PROC=' "$PROJECT_DIR/chati-common.sh")"
+    OLLAMA_PROC="$CHATI_OLLAMA_PROC"
     echo "/opt/homebrew/bin/ollama serve" | grep -qE "$OLLAMA_PROC" \
         || { echo "pattern should match the real path form" >&2; return 1; }
     echo "ollama serve" | grep -qE "$OLLAMA_PROC" \
@@ -234,7 +264,7 @@ test_ollama_proc_pattern() {
         echo "pattern wrongly matches 'myollama serve'" >&2; return 1
     fi
 }
-run_test "ailocal OLLAMA_PROC matches ollama, not lookalikes" test_ollama_proc_pattern
+run_test "CHATI_OLLAMA_PROC matches ollama, not lookalikes" test_ollama_proc_pattern
 
 test_ola_dash_m_no_hang() {
     # `ola -m` with no value used to infinite-loop (shift 2 on 1 arg never
@@ -763,6 +793,20 @@ test_searxng_auth_config_writes_600() {
 }
 run_test "searxng_auth_config writes a 0600 creds file (off argv)" test_searxng_auth_config_writes_600
 
+test_searxng_local_endpoint_detection() {
+    # Powers the /web auto-start: only a localhost endpoint can be started here.
+    local r
+    r=$(SEARXNG_URLS="https://cloud.damken.com/searx" _searxng_local_endpoint)
+    assert_eq "$r" "" "remote-only config → nothing to start" || return 1
+    r=$(SEARXNG_URLS="https://cloud.damken.com/searx, http://localhost:8890" _searxng_local_endpoint)
+    assert_eq "$r" "http://localhost:8890" "picks the localhost endpoint" || return 1
+    r=$(SEARXNG_URLS="http://127.0.0.1:8890/" _searxng_local_endpoint)
+    assert_eq "$r" "http://127.0.0.1:8890" "127.0.0.1 counts as local (slash trimmed)" || return 1
+    r=$(SEARXNG_URLS="http://searx.example.com:8890" _searxng_local_endpoint)
+    assert_eq "$r" "" "a remote host that merely uses the local port is not local"
+}
+run_test "_searxng_local_endpoint spots a startable local SearXNG" test_searxng_local_endpoint_detection
+
 test_searxng_auth_config_empty_without_creds() {
     local f; f=$(SEARXNG_USER="" SEARXNG_PASS="" searxng_auth_config)
     assert_eq "$f" "" "no creds → no config file"
@@ -1045,7 +1089,8 @@ test_switch_announces_shell_drop() {
     # capturing the announcement via a file instead of a subshell.
     local out; reload_settings_announce > "$SANDBOX/announce_c" 2>&1; out=$(cat "$SANDBOX/announce_c")
     assert_eq "$AGENT_MODE" "OFF" "shell dropped after switch" \
-        && assert_match "$out" "Shell mode is OFF" "announced the drop"
+        && assert_match "$out" "Shell mode is OFF" "announced the drop" \
+        && assert_match "$out" "/back" "points at /back to return to the armed session"
 }
 run_test "session change announces Shell going OFF (#60)" test_switch_announces_shell_drop
 
@@ -1074,8 +1119,8 @@ test_version_gt() {
 }
 run_test "version_gt compares versions numerically (self-update)" test_version_gt
 
-# --- OpenWebUI login-less persistence (ailocal resolve_webui_auth) ---
-eval "$(awk '/^resolve_webui_auth\(\) \{/,/^}$/' "$PROJECT_DIR/ai_local/ailocal")"
+# --- OpenWebUI login-less persistence (libexec/chati-webui resolve_webui_auth) ---
+eval "$(awk '/^resolve_webui_auth\(\) \{/,/^}$/' "$PROJECT_DIR/libexec/chati-webui")"
 test_webui_auth_persists_loginless() {
     local dir="$SANDBOX/webui_auth"; rm -rf "$dir"; mkdir -p "$dir"
     local db="$dir/webui.db" marker="$dir/.loginless"
@@ -1264,6 +1309,21 @@ test_detect_ocr_folder() {
 }
 run_test "detect_ocrable_in_msg expands a named folder" test_detect_ocr_folder
 
+test_detect_ocr_no_folders_flag() {
+    # With the no_folders flag, a named folder is NOT expanded — only files
+    # named explicitly count. Powers the auto-OCR "named but not OCR'd" hint,
+    # which must not fire just because a mentioned folder happens to hold images.
+    local d="$SANDBOX/codigo"; mkdir -p "$d"
+    : > "$d/diagrama.pdf"; : > "$d/captura.png"; : > "$d/main.py"
+    local r; r=$(detect_ocrable_in_msg "revisa el codigo en $d" no_folders)
+    assert_eq "$r" "" "folder not expanded when no_folders set"
+    # An explicitly named file still counts with the flag.
+    local f="$SANDBOX/recibo.pdf"; : > "$f"
+    r=$(detect_ocrable_in_msg "mira $f" no_folders)
+    assert_eq "$r" "$f" "explicit file still detected with no_folders"
+}
+run_test "detect_ocrable_in_msg honors the no_folders flag" test_detect_ocr_no_folders_flag
+
 test_msg_wants_ocr_intent() {
     msg_wants_ocr "Para leer los pdfs tiene que usar el docr, si puedes?" \
         || { echo "should detect read-a-pdf intent" >&2; return 1; }
@@ -1420,6 +1480,131 @@ test_json_has_thinking() {
 }
 run_test "_json_has_thinking detects the thinking capability from /api/show JSON" test_json_has_thinking
 
+# --- ola always sends the think flag (#86) ---
+# A reasoning model (gemma4:26b) thinks by DEFAULT and splits its output into a
+# thinking channel + content. ola reads only content, so if "think" is omitted
+# the model can spend its whole num_predict budget thinking and return EMPTY
+# content → chati's "Empty response" error. ola must send think explicitly:
+# false when THINK is OFF (so the answer lands in content), true for /think.
+test_ola_payload_always_sends_think() {
+    local ola="$PROJECT_DIR/ola_chat/ola" prog
+    # Extract ola's real payload jq program (between the argjson-think quote and
+    # the redirect) so this stays faithful if the program is edited.
+    prog=$(awk '/--argjson think /{grab=1} grab{print} /> "\$PAYLOAD_FILE"/{exit}' "$ola" \
+           | sed -E '1 s/.*--argjson think "\$OLA_THINK_BOOL" .//' \
+           | sed -E 's/. > "\$PAYLOAD_FILE".*//')
+    [[ -n "$prog" ]] || { echo "could not extract ola payload jq program" >&2; return 1; }
+    local off on
+    off=$(printf '%s\n' '{"role":"user","content":"hi"}' \
+          | jq -R -s --arg model m --arg prompt "" --arg summary "" --arg extra "" --argjson think false "$prog" | jq -c '.think')
+    on=$(printf '%s\n' '{"role":"user","content":"hi"}' \
+          | jq -R -s --arg model m --arg prompt "" --arg summary "" --arg extra "" --argjson think true "$prog" | jq -c '.think')
+    assert_eq "$off" "false" "think:false sent when Thinking is OFF" \
+        && assert_eq "$on" "true" "think:true sent for /think"
+}
+run_test "ola sends think:false when OFF so reasoning models don't return empty (#86)" test_ola_payload_always_sends_think
+
+# --- chati-common.sh: subcommand dispatch + config helpers (Fase 1) ---
+# shellcheck source=/dev/null
+source "$PROJECT_DIR/chati-common.sh"
+
+test_resolve_subcommand() {
+    local d; d=$(mktemp -d); mkdir -p "$d/libexec"
+    printf '#!/bin/bash\necho hi\n' > "$d/libexec/chati-ping"; chmod +x "$d/libexec/chati-ping"
+    printf '#!/bin/bash\n' > "$d/libexec/chati-noexec"   # not executable
+    # A reserved command (handled inline by the REPL case) must NOT resolve even
+    # if a libexec/chati-<word> exists — otherwise it would silently steal it.
+    printf '#!/bin/bash\n' > "$d/libexec/chati-search"; chmod +x "$d/libexec/chati-search"
+    local save="$CHATI_DIR"; CHATI_DIR="$d"
+    local ok bare none noexec empty resv
+    ok=$(chati_resolve_subcommand --ping)          # --command resolves
+    bare=$(chati_resolve_subcommand ping)          # a bare word is a parameter, never a command
+    none=$(chati_resolve_subcommand --nope)        # missing
+    noexec=$(chati_resolve_subcommand --noexec)    # present but not +x
+    empty=$(chati_resolve_subcommand "")           # empty name
+    resv=$(CHATI_RESERVED_WORDS="search" chati_resolve_subcommand --search)  # reserved
+    CHATI_DIR="$save"; rm -rf "$d"
+    assert_eq "$ok" "$d/libexec/chati-ping" "a --command resolves to its libexec script" \
+        && assert_eq "$bare" "" "a bare word never resolves (reserved for a parameter)" \
+        && assert_eq "$none" "" "a missing command does not resolve" \
+        && assert_eq "$noexec" "" "a non-executable file does not resolve" \
+        && assert_eq "$empty" "" "empty name does not resolve" \
+        && assert_eq "$resv" "" "a reserved command does not resolve to libexec"
+}
+run_test "chati_resolve_subcommand: dashed-command dispatch rule" test_resolve_subcommand
+
+test_no_inline_command_collides_with_libexec() {
+    # Every --command the REPL handles inline in its TOP-LEVEL dispatch case
+    # (`case "${1:-}" in` ... bottom `esac`) must be reserved (by its bare name,
+    # no dashes), so the dispatcher — which runs first — never silently shadows
+    # it with a libexec/chati-<name>. Scope to that block only: top-level arms are
+    # indented 4 spaces; nested/helper case blocks elsewhere are ignored.
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/chati-common.sh"
+    local word hit=""
+    while IFS= read -r word; do
+        [[ -n "$word" ]] || continue
+        if [[ -x "$PROJECT_DIR/libexec/chati-$word" ]]; then
+            case " $CHATI_RESERVED_WORDS " in
+                *" $word "*) : ;;                     # reserved: fine
+                *) hit="$hit $word" ;;                # collision: libexec shadows the case
+            esac
+        fi
+    done < <(
+        # Pull the `--name` arms (e.g. `    --upgrade)`), strip the dashes and the
+        # trailing |) to get the bare name the reserved-word list must contain.
+        awk '/^case "\$\{1:-\}" in/{f=1;next} f&&/^esac/{exit} f' "$PROJECT_DIR/chati" \
+            | grep -oE '^    --[a-z][a-z0-9-]*[|)]' \
+            | sed -E 's/^ *--//; s/[|)]$//' | sort -u
+    )
+    assert_eq "$hit" "" "no inline --command is shadowed by a libexec script"
+}
+run_test "dispatcher: no inline command collides with a libexec script" test_no_inline_command_collides_with_libexec
+
+test_searxng_urls_parse() {
+    local out
+    out=$(SEARXNG_URLS="http://a:8890/ , https://b/searx" chati_searxng_urls | tr '\n' ',')
+    assert_eq "$out" "http://a:8890,https://b/searx," "comma-split, trimmed, trailing slash stripped"
+    out=$(SEARXNG_URLS="" SEARXNG_URL="http://only:8890" chati_searxng_urls)
+    assert_eq "$out" "http://only:8890" "falls back to single SEARXNG_URL"
+}
+run_test "chati_searxng_urls parses endpoints (comma/trim/slash)" test_searxng_urls_parse
+
+test_doctor_line_format() {
+    # Source the doctor (its guard skips the probes) to get the pure formatter.
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/libexec/chati-doctor"
+    local okl faill
+    okl=$(_doctor_line ok "Ollama" "up"); faill=$(_doctor_line fail "Ollama" "down")
+    assert_match "$okl" "Ollama" "row carries the label" \
+        && assert_match "$okl" "✅" "ok row shows the ok icon" \
+        && assert_match "$faill" "❌" "fail row shows the fail icon"
+}
+run_test "chati-doctor _doctor_line formats status rows" test_doctor_line_format
+
+test_svc_running_and_stop() {
+    # Exercise chati_svc_running / chati_svc_stop against a THROWAWAY process of
+    # our own (a sleep with a unique duration as the marker) — never a real
+    # service, so the test can't stop Ollama/OpenWebUI/SearXNG.
+    local marker=$(( 30000 + (RANDOM % 9000) ))
+    sleep "$marker" &
+    local pid=$!
+    # Give the process a moment to be visible to pgrep.
+    local t; for t in 1 2 3 4 5; do chati_svc_running "sleep $marker" && break; sleep 0.1; done
+    if ! chati_svc_running "sleep $marker"; then
+        kill "$pid" 2>/dev/null; echo "tagged sleep not seen as running" >&2; return 1
+    fi
+    local out; out=$(chati_svc_stop "sleep $marker" "TestSvc" 5)
+    if chati_svc_running "sleep $marker"; then
+        kill -9 "$pid" 2>/dev/null; echo "svc_stop left the process alive" >&2; return 1
+    fi
+    assert_match "$out" "TestSvc stopped" "svc_stop reports the stop" || return 1
+    # And a no-op path: nothing matching the pattern.
+    out=$(chati_svc_stop "sleep 999888777 nonexistent" "Ghost")
+    assert_eq "$out" "Ghost was not running" "svc_stop is a no-op when absent"
+}
+run_test "chati_svc_running/chati_svc_stop manage a service by proc pattern" test_svc_running_and_stop
+
 # --- extract_exec_cmd ---
 test_exec_simple() {
     local r; r=$(extract_exec_cmd "[EXEC: ls -la ~]")
@@ -1494,7 +1679,8 @@ test_gate_accepts_explicit_yes() {
 }
 run_test "agent gate accepts explicit y/Y/yes" test_gate_accepts_explicit_yes
 
-# --- agent_cmd_is_safe (whitelist auto-run) ---
+# --- agent_cmd_is_safe (read-only classifier: now only suppresses the warning;
+#     /s asks for EVERY command, so this no longer bypasses the prompt) ---
 test_agent_safe_allows_readonly() {
     local c
     for c in "ls -la ~" "cat /etc/hosts" "grep -r foo ." "find ~ -name '*.md'" \
@@ -1505,7 +1691,7 @@ test_agent_safe_allows_readonly() {
         fi
     done
 }
-run_test "agent whitelist auto-runs read-only commands" test_agent_safe_allows_readonly
+run_test "agent_cmd_is_safe classifies read-only commands as safe (no warning)" test_agent_safe_allows_readonly
 
 test_agent_safe_blocks_risky() {
     local c
@@ -1520,7 +1706,7 @@ test_agent_safe_blocks_risky() {
         fi
     done
 }
-run_test "agent whitelist prompts for risky/composed commands" test_agent_safe_blocks_risky
+run_test "agent_cmd_is_safe flags risky/composed commands (warning)" test_agent_safe_blocks_risky
 
 # --- macro_fola (send_and_capture stubbed) ---
 test_macro_fola_real_newlines() {
@@ -1687,6 +1873,80 @@ test_compare_routes_before_ocr() {
 }
 run_test "auto-OCR routes compare-intent to metadata, not OCR" test_compare_routes_before_ocr
 
+test_too_many_ocr_is_intent_gated() {
+    # Bug: naming a folder (e.g. for a code review, or an output dir like
+    # ~/Downloads) expanded to its image/PDF files and the ">max" guard fired
+    # the "too many to OCR" banner on count alone, hijacking the turn. The
+    # count check must live INSIDE the read/paths-intent branch, never standalone.
+    local block; block=$(awk '/Auto-OCR \(#21\)/,/No path in THIS message/' "$PROJECT_DIR/chati")
+    # The too-many banner must not sit in a bare "elif (( ... > _ocr_max ))".
+    if printf '%s' "$block" | grep -Eq 'elif \(\( \$\{#_ocr_files\[@\]\} > _ocr_max \)\)'; then
+        echo "'too many' guard still fires on count alone (no intent gate)" >&2; return 1
+    fi
+    # And the banner must appear after an OCR-intent condition in the chain.
+    printf '%s' "$block" | grep -q 'too many to OCR automatically' \
+        || { echo "too-many banner missing" >&2; return 1; }
+}
+run_test "auto-OCR 'too many' banner is gated by read intent" test_too_many_ocr_is_intent_gated
+
+#==============================================================================
+# PHASE 2b — bash-only guard (#89)
+#==============================================================================
+phase "PHASE 2b: bash-only guard"
+
+# chati is bash-only (AGENTS.md). The only sanctioned scripting runtime left is
+# perl (the TeX->Unicode prettifier in lib_chat.sh, marked bash-only-allow until
+# its awk port lands, #89). Any other invocation of python/perl/ruby/node/php/
+# groovy in a tracked shell script is a regression. A sanctioned line opts out
+# with a trailing `# bash-only-allow: <reason>` marker. `[EXEC: ...]` lines are
+# skipped: those are model-emitted example commands in the system prompt (run
+# sandboxed), not chati's own code, so the bash-only rule doesn't govern them.
+# swiftc is out of scope:
+# it compiles a native Apple Vision OCR helper that bash cannot replace, not a
+# scripting runtime standing in for shell logic.
+test_bash_only_no_foreign_runtimes() {
+    # The shipped scripts only. The test harness itself is excluded: it names
+    # these runtimes on purpose (to enforce this very rule), so scanning it would
+    # flag its own strings.
+    local scripts=(chati chati-common.sh lib_chat.sh lib_web.sh setup.sh docr/docr
+                   libexec/chati-status libexec/chati-stop libexec/chati-webui
+                   libexec/chati-install libexec/chati-doctor
+                   ola_chat/ola ola_chat/mola ola_chat/ola_model
+                   installer/install_searxng.sh installer/install_webui.sh)
+    local banned='python3|python|perl|ruby|nodejs|node|php|groovy'
+    local f offenders=""
+    for f in "${scripts[@]}"; do
+        [[ -e "$PROJECT_DIR/$f" ]] || continue
+        # A runtime used as a command: the word with a non-identifier char (or
+        # line start) before it and whitespace/EOL after. Drop comment-only
+        # lines, `command -v X` / `which X` probes, python@3.x formula names,
+        # and lines that explicitly opt out with a bash-only-allow marker.
+        while IFS= read -r hit; do
+            offenders="$offenders
+  $f:$hit"
+        done < <(
+            grep -nE "(^[[:space:]]*|[|;&\`({][[:space:]]*|\\\$\()(${banned})([[:space:]]|\$)" "$PROJECT_DIR/$f" 2>/dev/null \
+                | grep -vE ':[[:space:]]*#' \
+                | grep -vE 'command -v|which |python@|bash-only-allow' \
+                | grep -vE '\[EXEC:'
+        )
+    done
+    [[ -z "$offenders" ]] || {
+        echo "foreign scripting runtime(s) outside the bash-only allowlist:$offenders" >&2
+        return 1
+    }
+}
+run_test "bash-only: no foreign scripting runtime outside the allowlist" test_bash_only_no_foreign_runtimes
+
+test_no_dead_groovy() {
+    # GraphPdfOcr.groovy was a never-invoked reference implementation; it and the
+    # groovy brew dependency are gone. Guard against either coming back.
+    assert_file_absent "$PROJECT_DIR/docr/GraphPdfOcr.groovy" \
+        && { ! grep -qiE '^[^#]*brew .*groovy|^brew "groovy"' "$PROJECT_DIR/setup.sh" "$PROJECT_DIR/installer/Brewfile" 2>/dev/null \
+             || { echo "groovy brew dependency is back" >&2; return 1; }; }
+}
+run_test "bash-only: dead Groovy stays removed" test_no_dead_groovy
+
 #==============================================================================
 # PHASE 3 — Integration (needs Ollama)
 #==============================================================================
@@ -1735,6 +1995,52 @@ else
         }
         run_test "ola populates LAST_RESPONSE_FILE" test_ola_stream
     fi
+fi
+
+#==============================================================================
+# PHASE 4 — Lint (shellcheck ratchet, #96)
+#==============================================================================
+phase "PHASE 4: lint (shellcheck ratchet)"
+
+# Per-file ceiling of `shellcheck -x -S warning` findings. The lint test fails
+# if a file goes ABOVE its number: a ratchet, warnings can only come down. Lower
+# these as the backlog is cleared; docr's 52 is the SC2155 "declare and assign
+# separately" batch (see #90). setup.sh's 2 are the SC2221/2222 duplicate-case
+# pair fixed in #98. A file not listed here gets a ceiling of 0.
+_lint_ceiling() {
+    # shellcheck is a dev-only tool (needed to run these tests, never at
+    # runtime), so setup.sh does NOT pull it onto every client/server box.
+    case "$1" in
+        docr/docr)        echo 52 ;;
+        chati)            echo 2 ;;
+        lib_chat.sh)      echo 2 ;;
+        setup.sh)         echo 2 ;;
+        *)                echo 0 ;;
+    esac
+}
+
+test_lint_shellcheck() {
+    local files=(chati chati-common.sh lib_chat.sh lib_web.sh setup.sh docr/docr
+                 installer/install_webui.sh)
+    # Include dispatcher subcommands once the chati-<sub> split lands (#87).
+    local x
+    for x in "$PROJECT_DIR"/libexec/chati-*; do
+        [[ -x "$x" ]] && files+=("libexec/${x##*/}")
+    done
+    local f n ceil over=""
+    for f in "${files[@]}"; do
+        [[ -e "$PROJECT_DIR/$f" ]] || continue
+        n=$(shellcheck -x -S warning -f gcc "$PROJECT_DIR/$f" 2>/dev/null | grep -c .)
+        ceil=$(_lint_ceiling "$f")
+        (( n > ceil )) && over="$over $f ($n > $ceil)"
+    done
+    [[ -z "$over" ]] || { echo "shellcheck ratchet exceeded:$over" >&2; return 1; }
+}
+
+if command -v shellcheck >/dev/null 2>&1; then
+    run_test "shellcheck findings stay at or below the ratchet" test_lint_shellcheck
+else
+    skip_test "shellcheck ratchet" "shellcheck not installed — brew install shellcheck (dev-only)"
 fi
 
 #==============================================================================

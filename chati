@@ -18,8 +18,19 @@ done
 CHATI_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 source "$CHATI_DIR/lib_chat.sh"
+source "$CHATI_DIR/chati-common.sh"
 
-CHATI_VERSION="1.33.1"
+# Git-style subcommand dispatch: `chati <sub>` runs libexec/chati-<sub> and
+# exits. One entry point, each subcommand its own small script. A flag or a
+# bareword with no matching script falls through to the flag parser / REPL.
+_subpath=$(chati_resolve_subcommand "${1:-}")
+if [[ -n "$_subpath" ]]; then
+    shift
+    exec "$_subpath" "$@"
+fi
+unset _subpath
+
+CHATI_VERSION="1.37.0"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -120,44 +131,49 @@ check_for_update_quiet() {
     printf '%s' "$now" > "$f" 2>/dev/null || true
     local latest; latest=$(chati_latest_version) || return 0
     version_gt "$CHATI_VERSION" "$latest" \
-        && echo "🆕 chati v$latest is available (you have $CHATI_VERSION). Update:  chati --update"
+        && echo "🆕 chati v$latest is available (you have $CHATI_VERSION). Update:  chati --upgrade"
     return 0
 }
 
 # Parse CLI flags up-front so `chati --help`, `chati --version` and the
-# headless `chati search` subcommand work without entering the REPL.
+# headless `chati --search` command work without entering the REPL.
 case "${1:-}" in
     -h|--help)
-        echo "Usage: chati [-h|--help] [-v|--version] [--check-update] [--update] [search <query...>]"
-        echo "Interactive Ollama chat. Type /h once inside for command list."
+        echo "Usage: chati [--command]"
+        echo "With no command, starts the interactive Ollama chat (type /h inside for the command list)."
         echo ""
-        echo "  --check-update      Check GitHub for a newer release (prints, no changes)."
-        echo "  --update            Update this checkout to the latest release (git pull)."
-        echo ""
-        echo "  search <query...>   Headless web search via the SearXNG backend:"
-        echo "                      prints results and exits (no REPL). For scripts,"
-        echo "                      pipelines and other machines/agents. Needs SEARXNG_URLS"
-        echo "                      configured in .env (same backend as the /web toggle)."
+        echo "Commands (dashed, so a bare word stays free for a parameter):"
+        echo "  --install [flags]    Install chati and its services (flags pass to the installer)."
+        echo "  --upgrade            Update this checkout to the latest release (git pull + re-apply)."
+        echo "  --webui              Start the OpenWebUI stack (Ollama + OpenWebUI)."
+        echo "  --stop               Stop the local services (OpenWebUI, SearXNG, Ollama)."
+        echo "  --status             Show which local services are running."
+        echo "  --doctor             Report the health of this install."
+        echo "  --search <query...>  Headless web search via the SearXNG backend (no REPL)."
+        echo "  --check-update       Check GitHub for a newer release (prints, no changes)."
+        echo "  -v, --version        Print the version."
         exit 0 ;;
     -v|--version)
         show_version; exit 0 ;;
-    --update|--upgrade)
+    --upgrade)
+        # "upgrade" is reserved so the dispatcher never routes --upgrade to a
+        # libexec script; it is handled inline (it needs chati's sourced helpers).
         chati_self_update; exit $? ;;
-    --check-update|--check)
+    --check-update)
         _lv=$(chati_latest_version) || { echo "chati: couldn't reach GitHub to check." >&2; exit 1; }
         if version_gt "$CHATI_VERSION" "$_lv"; then
-            echo "🆕 chati v$_lv is available (you have $CHATI_VERSION). Update:  chati --update"
+            echo "🆕 chati v$_lv is available (you have $CHATI_VERSION). Update:  chati --upgrade"
         else
             echo "✅ chati is up to date ($CHATI_VERSION; latest release v$_lv)."
         fi
         exit 0 ;;
-    search|--search)
+    --search)
         # Headless one-shot web search. Reuses lib_web.sh's web_search (sourced
         # via lib_chat.sh above), so it hits the exact same SearXNG endpoints and
         # formatting as the interactive /web pipeline — no REPL, no LLM call.
         shift
         if [[ $# -eq 0 ]]; then
-            echo "Usage: chati search <query...>" >&2
+            echo "Usage: chati --search <query...>" >&2
             echo "Headless web search via chati's SearXNG backend; prints results and exits." >&2
             exit 2
         fi
@@ -189,6 +205,25 @@ case "${1:-}" in
         esac
         ;;
 esac
+
+# The dispatcher already ran every --command backed by a libexec script, and the
+# case above handled --help/--version/--upgrade/--check-update/--search. Anything
+# still here is not a valid command. Commands are DASHED on purpose, so a bare
+# word is left free for a future parameter (none defined yet). Do NOT fall
+# through to the chat REPL — only a bare `chati` with no args starts it.
+if [[ -n "${1:-}" ]]; then
+    case "$1" in
+        --update)
+            echo "chati: use  chati --upgrade" >&2 ;;
+        --*)
+            echo "chati: unknown command '$1' (try: chati --help)" >&2 ;;
+        upgrade|install|webui|stop|status|doctor|search|check-update)
+            echo "chati: commands take a dash now — use:  chati --$1" >&2 ;;
+        *)
+            echo "chati: '$1' is not a command; commands start with -- (try: chati --help)" >&2 ;;
+    esac
+    exit 2
+fi
 
 # --- HISTORY MANAGEMENT ---
 # Under $STATE_DIR so each CHATI_INSTANCE keeps its own command history.
@@ -310,9 +345,15 @@ reload_settings_announce() {
     local was_agent="$AGENT_MODE" was_auto="$AGENT_AUTOACCEPT"
     load_active_settings
     if [[ "$was_agent" == "ON" && "$AGENT_MODE" != "ON" ]]; then
-        echo "🐚 Shell mode is OFF in this session (each session keeps its own settings — /s to enable)."
+        echo ""
+        echo "🐚 ⚠️  Shell mode is OFF in this session."
+        echo "       You armed it in the session you just left; each session keeps its own"
+        echo "       shell/auto-accept, so this one starts safe. /s to enable it here, or"
+        echo "       /back to return to the session where it was on."
     elif [[ "$was_auto" == "ON" && "$AGENT_AUTOACCEPT" != "ON" ]]; then
-        echo "🛡️  Auto-accept is OFF in this session (/sY to re-arm)."
+        echo ""
+        echo "🛡️  Auto-accept is OFF in this session (switching sessions resets it)."
+        echo "       /sY to re-arm it here, or /back to return to the previous session."
     fi
 }
 # Clean-exit handler: flush command history AND the current session's settings.
@@ -1032,7 +1073,7 @@ ocr_files_to_text() {
 # OCR-able files are returned — a bare mention of ".pdf" with no such file
 # matches nothing, so normal prose never triggers OCR. Powers auto-OCR (#21).
 detect_ocrable_in_msg() {
-    local msg="$1" sentinel=$'\x01' tok p
+    local msg="$1" no_folders="${2:-}" sentinel=$'\x01' tok p
     msg="${msg//\\ /$sentinel}"           # protect escaped spaces before splitting
     for tok in $msg; do
         tok="${tok//$sentinel/ }"         # restore the spaces
@@ -1042,9 +1083,12 @@ detect_ocrable_in_msg() {
         p=$(expand_path "$tok")
         if [[ -f "$p" ]] && ocr_is_ocrable "$p"; then
             printf '%s\n' "$p"
-        elif [[ -d "$p" ]]; then
+        elif [[ -d "$p" && -z "$no_folders" ]]; then
             # A named folder → the image/PDF files inside it (same collector /ocr
-            # uses), so "lee los pdfs de ~/Downloads/facturas" works too.
+            # uses), so "lee los pdfs de ~/Downloads/facturas" works too. Pass a
+            # second arg (no_folders) to suppress this — the auto-OCR router uses
+            # it so a folder mentioned for a non-OCR reason (a code review, an
+            # output dir) is not silently expanded into an OCR batch.
             ocr_collect_files "$p"
         fi
     done
@@ -1286,12 +1330,10 @@ Mode Toggles:
                         gemma4, qwen3…); on a plain model /think says so.
 /shell (/s)             Toggle Shell Mode — let the AI propose shell
                         commands to run on your Mac (you approve them).
-                        Read-only commands (ls, cat, grep, find, ps…) run
-                        directly; anything that could modify files,
-                        processes, network or system shows a warning and
-                        asks "Execute? (y/N)" — denied unless you type y.
-                        Set CHATI_AGENT_CONFIRM=all to confirm every
-                        command. Off by default.
+                        EVERY command asks "Execute? (y/N)" first — denied
+                        unless you type y; commands that could modify files,
+                        processes, network or system also show a warning.
+                        Off by default.
 /sY                     Toggle AUTO-ACCEPT (capital Y, on purpose so it
                         can't happen by accident): runs EVERY proposed
                         command WITHOUT asking — including destructive ones.
@@ -1386,7 +1428,7 @@ ensure_ollama_running() {
     fi
     echo "🚀 Starting 'ollama serve' (logs: ~/logs/ollama.log)..."
     mkdir -p "$HOME/logs"
-    # Apple Silicon perf tuning (see ailocal): flash attention + q8 KV cache.
+    # Apple Silicon perf tuning (Homebrew ollama's recommended flags): flash attention + q8 KV cache.
     export OLLAMA_FLASH_ATTENTION="${OLLAMA_FLASH_ATTENTION:-1}"
     export OLLAMA_KV_CACHE_TYPE="${OLLAMA_KV_CACHE_TYPE:-q8_0}"
     nohup ollama serve </dev/null >"$HOME/logs/ollama.log" 2>&1 &
@@ -1640,19 +1682,19 @@ while true; do
                 # verification; otherwise it toggles ON(verification)/OFF.
                 if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
                     AGENT_AUTOACCEPT="OFF"
-                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; risky commands ask 'Execute? (y/N)' again."
+                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; every command asks 'Execute? (y/N)' again."
                 elif [[ "$AGENT_MODE" == "ON" ]]; then
                     AGENT_MODE="OFF"
                     echo "🐚 Shell: OFF — the AI can no longer run shell commands."
                 else
                     AGENT_MODE="ON"
-                    echo "🛡️  Shell: ON (verification) — the AI proposes commands; read-only ones run directly,"
-                    echo "    anything that could change files/processes/network/system asks 'Execute? (y/N)'."
+                    echo "🛡️  Shell: ON (verification) — the AI proposes commands and EVERY one asks"
+                    echo "    'Execute? (y/N)' before it runs. Use /sY to auto-accept without asking."
                 fi ;;
             /sY)   # capital Y on purpose — a deliberate, can't-happen-by-accident switch
                 if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
                     AGENT_AUTOACCEPT="OFF"   # AGENT_MODE stays ON → back to verification
-                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; risky commands ask again."
+                    echo "🛡️  Shell: ON (verification) — auto-accept OFF; every command asks again."
                 else
                     AGENT_MODE="ON"; AGENT_AUTOACCEPT="ON"
                     echo "🔴 ⚠️  AUTO-ACCEPT ON — the AI will run EVERY command it proposes on your Mac"
@@ -1668,8 +1710,14 @@ while true; do
                     # SearXNG is external — only enable /web if it actually
                     # answers, so we never pretend to have internet.
                     echo "🌐 Checking web search backend(s)..." >&2
-                    web_reason=$(web_search_available 2>&1)
-                    if [[ $? -eq 0 ]]; then
+                    web_reason=$(web_search_available 2>&1); web_rc=$?
+                    # Backend down but a LOCAL SearXNG is configured? Start it and
+                    # re-check once, instead of refusing /web (the remote may just
+                    # be off). No-op for a remote-only config.
+                    if (( web_rc != 0 )) && ensure_searxng_running; then
+                        web_reason=$(web_search_available 2>&1); web_rc=$?
+                    fi
+                    if (( web_rc == 0 )); then
                         WEB_MODE="ON"
                         echo "🌐 Web Search: ON"
                         # Show which endpoints are live (round-robins over them).
@@ -1678,7 +1726,15 @@ while true; do
                         WEB_MODE="OFF"
                         echo "🚫 Web search unavailable:"
                         echo "$web_reason"
-                        echo "   Staying OFF. Set SEARXNG_URLS (or run a local SearXNG); see installer/SEARXNG_SETUP.md."
+                        # chati already tried to auto-start a local SearXNG above. If
+                        # it's configured but still down, the install is the thing to
+                        # check — don't point at a separate launcher (that's what the
+                        # single `chati` front door is meant to retire).
+                        if _searxng_local_endpoint >/dev/null 2>&1; then
+                            echo "   Couldn't bring the local SearXNG up — check it's installed (installer/SEARXNG_SETUP.md), then /web again."
+                        else
+                            echo "   Staying OFF. Set SEARXNG_URLS (or run a local SearXNG); see installer/SEARXNG_SETUP.md."
+                        fi
                     fi
                 fi ;;
             /think)
@@ -1800,7 +1856,7 @@ while true; do
                                     echo "   Its models differ — run /model to pick one available here."
                                 else
                                     echo "💾 Saved default Ollama → $OLLAMA_API (in .env), but can't reach it right now."
-                                    echo "   It'll be used once it's up (wake the machine, or 'ailocal awake on' there)."
+                                    echo "   It'll be used once it's up (wake or start that machine first)."
                                 fi
                             else
                                 if [[ -z "$h_target" ]]; then
@@ -1870,6 +1926,11 @@ while true; do
         _named_files=()
         while IFS= read -r _f; do [[ -n "$_f" ]] && _named_files+=("$_f"); done \
             < <(detect_files_in_msg "$msg")
+        # Image/PDF files named EXPLICITLY (not via folder expansion). A folder
+        # mentioned for a non-OCR reason must not drag its contents into OCR.
+        _ocr_explicit=()
+        while IFS= read -r _f; do [[ -n "$_f" ]] && _ocr_explicit+=("$_f"); done \
+            < <(detect_ocrable_in_msg "$msg" no_folders)
         _ocr_max="${CHATI_AUTO_OCR_MAX:-8}"
         if msg_wants_compare "$msg" && (( ${#_named_files[@]} >= 2 )); then
             # Compare / dedupe / size / date → metadata (+ text diff), NEVER
@@ -1891,25 +1952,31 @@ while true; do
                 fi
             fi
             msg="${msg}${_nl}${_nl}${_cmp}"
-        elif (( ${#_ocr_files[@]} > _ocr_max )); then
-            # docr is slow (~a minute per file); don't silently OCR a huge
-            # folder. Tell the user to opt in explicitly.
-            echo "📎 Found ${#_ocr_files[@]} image/PDF files — too many to OCR automatically."
-            echo "   Run  /ocr <file|folder|glob>  to read them all, or name specific files."
         elif (( ${#_ocr_files[@]} )) && { msg_wants_ocr "$msg" || msg_is_just_paths "$msg" "${_ocr_files[@]}"; }; then
             # OCR only when you actually want the text: a read/analyze verb, or
-            # a bare file drop (nothing but the path).
-            echo "📎 Detected ${#_ocr_files[@]} image/PDF file(s) — reading with docr…"
-            _ocr_text=$(ocr_files_to_text "${_ocr_files[@]}")
-            if [[ -n "$_ocr_text" ]]; then
-                msg="${msg}${_nl}${_nl}[Text extracted from the attached file(s) via OCR — use it to answer]:${_ocr_text}"
+            # a bare file drop (nothing but the path). The count guard lives HERE,
+            # not standalone — so merely mentioning a folder (for a code review,
+            # or as an output dir) never fires the "too many" banner on its own.
+            if (( ${#_ocr_files[@]} > _ocr_max )); then
+                # docr is slow (~a minute per file); don't silently OCR a huge
+                # folder. Tell the user to opt in explicitly.
+                echo "📎 Found ${#_ocr_files[@]} image/PDF files — too many to OCR automatically."
+                echo "   Run  /ocr <file|folder|glob>  to read them all, or name specific files."
+            else
+                echo "📎 Detected ${#_ocr_files[@]} image/PDF file(s) — reading with docr…"
+                _ocr_text=$(ocr_files_to_text "${_ocr_files[@]}")
+                if [[ -n "$_ocr_text" ]]; then
+                    msg="${msg}${_nl}${_nl}[Text extracted from the attached file(s) via OCR — use it to answer]:${_ocr_text}"
+                fi
             fi
-        elif (( ${#_ocr_files[@]} )); then
-            # Files named, but no read/compare intent — don't force OCR. Show
-            # what they are and offer the explicit ways in.
-            echo "📎 ${#_ocr_files[@]} image/PDF file(s) named — not OCR'd (OCR is only when you need the exact text)."
+        elif (( ${#_ocr_explicit[@]} )); then
+            # Image/PDF files named EXPLICITLY, but no read/compare intent — don't
+            # force OCR. Show what they are and offer the explicit ways in. Uses
+            # the explicit list (not folder-expanded) so a folder mentioned in
+            # passing doesn't dump its contents here either.
+            echo "📎 ${#_ocr_explicit[@]} image/PDF file(s) named — not OCR'd (OCR is only when you need the exact text)."
             echo "   • /ocr <file>  reads the text   • ask to \"compare\" for size/date/duplicates"
-            msg="${msg}${_nl}${_nl}[Files named (not read):${_nl}$(files_metadata_summary "${_ocr_files[@]}")]"
+            msg="${msg}${_nl}${_nl}[Files named (not read):${_nl}$(files_metadata_summary "${_ocr_explicit[@]}")]"
         elif msg_wants_ocr "$msg"; then
             # No path in THIS message, but you asked to read a document. First
             # reuse a path/folder you named earlier in this session, so you
@@ -2001,11 +2068,13 @@ while true; do
             if [[ "$AGENT_AUTOACCEPT" == "ON" ]]; then
                 echo "   🔴 auto-accept (/sY) — running without asking"
                 run_it=1
-            elif [[ "${CHATI_AGENT_CONFIRM:-}" != "all" ]] && agent_cmd_is_safe "$agent_cmd"; then
-                echo "   ✅ read-only — running without confirmation"
-                run_it=1
             else
-                echo "   ⚠️  This may modify files, processes, network or system — review it."
+                # /s verification: EVERY command asks — including read-only ones.
+                # agent_cmd_is_safe no longer gates the prompt; it only decides
+                # whether to show the "may modify…" warning, so `ls`/`find` ask
+                # without a scary banner while risky commands still get flagged.
+                agent_cmd_is_safe "$agent_cmd" \
+                    || echo "   ⚠️  This may modify files, processes, network or system — review it."
                 read -rp "✅ Execute? (y/N): " confirm
                 if (( _chati_interrupted )); then echo; echo "🛑 Stopped."; break; fi
                 agent_confirmed "$confirm" && run_it=1

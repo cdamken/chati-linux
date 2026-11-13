@@ -4,8 +4,8 @@
 #==============================================================================
 # Stands up a personal SearXNG under ~/searxng so chati can round-robin
 # web search across it AND your cloud instance (two source IPs → double
-# the upstream rate-limit budget). Managed afterwards by `ailocal
-# start|stop|status searxng`.
+# the upstream rate-limit budget). It starts on demand when you use /web,
+# and `chati --status` / `chati --stop` report and stop it.
 #
 # Why not Docker: by request. This is the supported manual install —
 # git clone + venv + granian + settings.yml. Pinned to Python 3.12
@@ -37,6 +37,12 @@ else
 fi
 
 # 2. venv on Python 3.12 (3.14 breaks SearXNG's deps).
+# Have uv OWN the Python first: a managed standalone CPython that `brew
+# autoremove` can't delete out from under the venv. Without this, the venv
+# linked brew's python@3.12 and a later autoremove left a dangling interpreter
+# (the "No such file or directory" granian breakage). Fast no-op once present.
+uv python install 3.12 || { echo "❌ Failed to install uv-managed Python 3.12"; exit 1; }
+
 # Reuse an existing venv instead of failing: a re-run/upgrade shouldn't blow
 # away a working environment (and `uv venv` errors when it already exists and
 # the user declines to replace it). Deps below are (re)installed either way.
@@ -87,14 +93,14 @@ else
 fi
 
 # 5. Smoke test. searx is NOT installed as a package (see step 3) — it's
-#    imported from the source tree, so verify it the SAME way ailocal runs
-#    it at startup: cwd = src + PYTHONPATH = src. A bare `python -c "import
+#    imported from the source tree, so verify it the SAME way chati_start_searxng
+#    runs it: cwd = src + PYTHONPATH = src. A bare `python -c "import
 #    searx"` fails with ModuleNotFoundError even on a perfectly good install.
 echo "🔎 Verifying import..."
 ( cd "$SEARXNG_SRC" && PYTHONPATH="$SEARXNG_SRC" "$SEARXNG_VENV/bin/python" -c "import searx" ) \
     || { echo "❌ searx import failed"; exit 1; }
 
 echo ""
-echo "✅ SearXNG installed. Start it with:  ailocal start searxng"
+echo "✅ SearXNG installed. It starts on demand when you use /web in chati."
 echo "   Then add it to chati's ~/chati/.env:"
 echo "     SEARXNG_URLS=\"http://127.0.0.1:$PORT, <your-cloud-searxng>\""
