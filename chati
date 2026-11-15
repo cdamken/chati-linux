@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.2"
+CHATI_VERSION="1.38.3"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -66,6 +66,17 @@ chati_self_update() {
     if ! git -C "$CHATI_DIR" rev-parse --git-dir >/dev/null 2>&1; then
         echo "chati: $CHATI_DIR isn't a git checkout — download the release:" >&2
         echo "   https://github.com/$CHATI_REPO/archive/refs/tags/v$latest.tar.gz" >&2
+        return 1
+    fi
+    # System install: the checkout lives in a root-owned prefix (e.g. /opt), so a
+    # normal user can't git-pull or re-link it. Re-run the whole upgrade as root.
+    if [[ "$(id -u)" -ne 0 && ! -w "$CHATI_DIR/.git" ]]; then
+        if command -v sudo >/dev/null 2>&1; then
+            echo "🔒 System install at $CHATI_DIR (root-owned) — re-running the upgrade with sudo…"
+            exec sudo "$CHATI_DIR/chati" --upgrade
+        fi
+        echo "chati: $CHATI_DIR is root-owned and sudo isn't available. Upgrade as root:" >&2
+        echo "   sudo \"$CHATI_DIR/chati\" --upgrade" >&2
         return 1
     fi
     if [[ -n "$(git -C "$CHATI_DIR" status --porcelain 2>/dev/null)" ]]; then
@@ -107,8 +118,16 @@ chati_self_update() {
     # and is idempotent (no heavy webui reinstall unless PyPI moved). This closes
     # the old gap where `chati --update` pulled code but never applied it, so a
     # change (config, wiring, a webui reset) never landed.
+    # A system install (the PATH link in /usr/local/bin points back here) must
+    # re-apply with --system so it refreshes that shared link, not a stray one in
+    # root's home.
+    local setup_flags="--update --yes"
+    if [[ "$(readlink /usr/local/bin/chati 2>/dev/null)" == "$CHATI_DIR/chati" ]]; then
+        setup_flags="--update --system --yes"
+    fi
     if [[ -x "$CHATI_DIR/setup.sh" ]]; then
-        if "$CHATI_DIR/setup.sh" --update --yes; then
+        # shellcheck disable=SC2086  # setup_flags is a deliberate flag list
+        if "$CHATI_DIR/setup.sh" $setup_flags; then
             echo "✅ Updated to chati $newver and applied. Restart chati to use it."
         else
             echo "⚠️  Updated to chati $newver, but applying setup hit a snag." >&2

@@ -231,8 +231,9 @@ run_test "setup.sh --searxng case is unique and captures the URL" test_setup_sea
 
 test_update_applies_setup() {
     # chati --update must APPLY what it pulls (run setup --update), not just pull.
-    grep -q 'setup.sh" --update' "$PROJECT_DIR/chati" \
-        || { echo "chati --update should run 'setup.sh --update' after a pull" >&2; return 1; }
+    grep -qE 'setup_flags="--update --yes"' "$PROJECT_DIR/chati" \
+        && grep -qE '"\$CHATI_DIR/setup\.sh" \$setup_flags' "$PROJECT_DIR/chati" \
+        || { echo "chati --update should run setup.sh with --update after a pull" >&2; return 1; }
     # setup --update re-applies respecting the installed profile (derives webui/
     # searxng from what's on disk, never forcing a full profile onto a client box).
     grep -qE 'UPDATE_MODE=1' "$PROJECT_DIR/setup.sh" \
@@ -319,6 +320,19 @@ test_tts_platform_honesty() {
         || { echo "tts= colors line should be macOS-gated" >&2; return 1; }
 }
 run_test "Talk/TTS hides macOS-only bits on Linux, honest when no engine" test_tts_platform_honesty
+
+# chati --upgrade on a system install (root-owned prefix) re-runs itself with
+# sudo so a normal user can upgrade, then re-applies with --system.
+test_upgrade_system_sudo() {
+    cd "$PROJECT_DIR" || return 1
+    grep -qE 'id -u.*-ne 0 && ! -w "\$CHATI_DIR/\.git"' "$PROJECT_DIR/chati" \
+        || { echo "self-update should detect a root-owned (non-writable) checkout" >&2; return 1; }
+    grep -qE 'exec sudo "\$CHATI_DIR/chati" --upgrade' "$PROJECT_DIR/chati" \
+        || { echo "self-update should re-exec with sudo on a system install" >&2; return 1; }
+    grep -q 'setup_flags="--update --system --yes"' "$PROJECT_DIR/chati" \
+        || { echo "self-update should re-apply with --system for a system install" >&2; return 1; }
+}
+run_test "chati --upgrade re-runs with sudo on a system install" test_upgrade_system_sudo
 
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
