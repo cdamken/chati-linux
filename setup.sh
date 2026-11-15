@@ -571,10 +571,21 @@ link_run() { if [[ "$SYSTEM_LINK" -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
 if [[ "$CHATI_PLATFORM" == macos ]]; then
     LINK_BIN="$(brew --prefix)/bin"
 elif [[ "$SYSTEM_LINK" -eq 1 ]]; then
+    # All-users install: the repo must live somewhere every user can read (a
+    # /usr/local/bin symlink only points back to it). A user home is often 0750,
+    # so relocate the checkout into a shared prefix (default /opt/chati-linux)
+    # unless we are already running from one. This makes `--system` self-
+    # contained: no manual cp/chown afterwards.
+    SYSTEM_PREFIX="${CHATI_SYSTEM_PREFIX:-/opt/chati-linux}"
+    if [[ "$REPO_ROOT" != "$SYSTEM_PREFIX" ]]; then
+        step "Placing the repo in $SYSTEM_PREFIX (shared, readable by all users)"
+        sudo mkdir -p "$SYSTEM_PREFIX"
+        sudo cp -a "$REPO_ROOT/." "$SYSTEM_PREFIX/"   # copy contents (incl. .git); refreshes an existing prefix
+        REPO_ROOT="$SYSTEM_PREFIX"
+        ok "Repo available at $SYSTEM_PREFIX"
+    fi
+    sudo chown -R root:root "$SYSTEM_PREFIX"
     LINK_BIN="/usr/local/bin"
-    case "$REPO_ROOT" in
-        /home/*|/Users/*|"$HOME"/*) warn "System install from a user home ($REPO_ROOT): other users need read access to it. A shared path like /opt/chati-linux is sturdier." ;;
-    esac
 else
     LINK_BIN="$HOME/.local/bin"; mkdir -p "$LINK_BIN"
 fi

@@ -263,11 +263,36 @@ test_setup_system_flag() {
         && grep -qE 'link_run\(\)' "$PROJECT_DIR/setup.sh" \
         && grep -qE 'SYSTEM_LINK" -eq 1 \]\] && sudo|SYSTEM_LINK" -eq 1 \]\]; then sudo' "$PROJECT_DIR/setup.sh" \
         || { echo "setup.sh --system must link into /usr/local/bin via sudo (link_run)" >&2; return 1; }
+    # --system is self-contained: it relocates the checkout into a shared prefix
+    # (default /opt/chati-linux) so there is no manual cp/chown afterwards.
+    grep -q 'CHATI_SYSTEM_PREFIX:-/opt/chati-linux' "$PROJECT_DIR/setup.sh" \
+        && grep -qE 'sudo cp -a "\$REPO_ROOT/\." "\$SYSTEM_PREFIX/"' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh --system must relocate the repo into a shared prefix" >&2; return 1; }
     local out; out=$(./setup.sh --help 2>&1) || return 1
     assert_match "$out" "system" "setup --system in help" \
         && assert_match "$out" "ALL users" "setup --system explains all-users scope" || return 1
 }
 run_test "setup.sh --system links into /usr/local/bin for all users" test_setup_system_flag
+
+# The curl|sudo bash bootstrap: downloads the repo, installs it, runs it as root.
+test_bootstrap_install_sh() {
+    cd "$PROJECT_DIR" || return 1
+    [[ -f "$PROJECT_DIR/install.sh" ]] || { echo "install.sh bootstrap missing" >&2; return 1; }
+    [[ -x "$PROJECT_DIR/install.sh" ]] || { echo "install.sh must be executable" >&2; return 1; }
+    bash -n "$PROJECT_DIR/install.sh" || { echo "install.sh has a syntax error" >&2; return 1; }
+    # Must require root, clone/update the repo, and hand off to setup.sh --system.
+    grep -q 'id -u' "$PROJECT_DIR/install.sh" \
+        && grep -q 'git clone' "$PROJECT_DIR/install.sh" \
+        && grep -qE 'exec \./setup\.sh --system' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh must be root-gated, clone, and exec setup.sh --system" >&2; return 1; }
+    # Safe server defaults: CLI-only, no model pull, unless overridden.
+    grep -q 'CHATI_SETUP_ARGS:---minimal --no-pull' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh default args should be --minimal --no-pull" >&2; return 1; }
+    # README documents the one-liner so it is discoverable from GitHub.
+    grep -q 'install.sh | sudo bash' "$PROJECT_DIR/README.md" \
+        || { echo "README should document the curl|sudo bash one-liner" >&2; return 1; }
+}
+run_test "install.sh bootstrap: download, install, run as root (documented)" test_bootstrap_install_sh
 
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
@@ -2039,7 +2064,7 @@ _lint_ceiling() {
 }
 
 test_lint_shellcheck() {
-    local files=(chati chati-common.sh lib_chat.sh lib_web.sh setup.sh docr/docr
+    local files=(chati chati-common.sh lib_chat.sh lib_web.sh setup.sh install.sh docr/docr
                  installer/install_webui.sh)
     # Include dispatcher subcommands once the chati-<sub> split lands (#87).
     local x

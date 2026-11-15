@@ -2,7 +2,7 @@
 
 An Ollama-centric, high-performance chat interface for the command line, with local AI service management and OpenWebUI integration.
 
-![version](https://img.shields.io/badge/version-1.37.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![version](https://img.shields.io/badge/version-1.38.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 > **chati-linux** (this fork) is porting chati to Ubuntu/Linux while keeping macOS working (cross-platform via OS detection). Tracking: [#1](../../issues/1) · upstream: [cdamken/chati#30](https://github.com/cdamken/chati/issues/30).
 
@@ -42,6 +42,32 @@ cd ~/chati
 > **CLI only?** `./setup.sh --minimal` skips the browser app and SearXNG. **Undo everything?** `./setup.sh --remove-all` (see [Uninstalling](#uninstalling-remove-all)).
 >
 > **Paste one command at a time.** macOS zsh treats `#` and stray quotes literally, so pasting explanatory text can strand you at a `quote>` prompt — if that happens, press **Ctrl-C** and paste just the command. Every block above is comment-free. More detail and options in [Fresh Mac Setup](#fresh-mac-setup) below.
+
+## ⚡ Quick Start (Linux server — all users)
+
+One command, run as root. It downloads chati into a shared location, installs its dependencies, and links `chati` onto **every user's** PATH. Each user keeps their own config and history; models are shared through Ollama.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cdamken/chati-linux/main/install.sh | sudo bash
+```
+
+**Done.** Any user on the box can now run `chati`. Verify (no sudo):
+
+```bash
+chati --version && chati --status
+```
+
+Defaults are safe on a server that already runs Ollama: terminal chat only (no OpenWebUI/SearXNG services), and no models are pulled (it uses whatever Ollama already has). Tune it with environment variables before the pipe:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CHATI_SETUP_ARGS` | `--minimal --no-pull` | Args passed to `setup.sh --system`. Set to `""` for the full stack (OpenWebUI + SearXNG + a model). |
+| `CHATI_SYSTEM_PREFIX` | `/opt/chati-linux` | Where the shared checkout lives (must be readable by all users). |
+| `CHATI_BRANCH` | `main` | Branch to install. |
+
+Example — full install with the web UI: `CHATI_SETUP_ARGS="" curl -fsSL …/install.sh | sudo bash`
+
+Re-running the one-liner updates an existing install in place. **Per-user instead of all-users?** Clone the repo and run `./setup.sh` without `--system` (links into your own `~/.local/bin`). **Just one machine for yourself on Linux?** Same per-user flow.
 
 ## Philosophy: bash as the conductor
 
