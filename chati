@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.1"
+CHATI_VERSION="1.38.2"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -547,6 +547,17 @@ agent_cmd_is_safe() {
 # which IS the on-screen rendering when voice is on. To avoid a double
 # print, send_and_capture suppresses ola's own streaming output when
 # VOICE_MODE is on (the thinking indicator on stderr still shows).
+# Is there a usable text-to-speech engine on this machine? macOS always has
+# `say`; Linux needs speech-dispatcher (spd-say) or espeak. The Talk setting is
+# honest about this instead of pretending to speak when nothing can.
+tts_available() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        command -v say >/dev/null 2>&1
+    else
+        command -v spd-say >/dev/null 2>&1 || command -v espeak-ng >/dev/null 2>&1 || command -v espeak >/dev/null 2>&1
+    fi
+}
+
 speak_if_enabled() {
     local text="$1"
     [[ "$VOICE_MODE" == "ON" && -n "$text" ]] || return 0
@@ -1269,6 +1280,26 @@ show_settings() {
         http://localhost:11434|http://127.0.0.1:11434) ;;
         *) model_where="   🛰️  $OLLAMA_API" ;;
     esac
+    # Talk is only real if the machine has a TTS engine. On a Linux box without
+    # speech-dispatcher/espeak, say so plainly instead of showing voice/speed
+    # options that would do nothing.
+    # macOS `say` has named voices and interactive color highlighting; Linux
+    # engines (spd-say/espeak) have neither, so on Linux we show only what works
+    # (speed). No engine at all -> say so plainly.
+    local talk_line colors_line
+    if ! tts_available; then
+        talk_line="unavailable (no TTS engine — install speech-dispatcher or espeak)"
+    elif chati_is_mac; then
+        talk_line="$VOICE_MODE (Voice: $DEFAULT_VOICE, Speed: ${SAY_SPEED}x, Colors: $SAY_COLORS)"
+    else
+        talk_line="$VOICE_MODE (Speed: ${SAY_SPEED}x)"
+    fi
+    # The tts= highlight colors are a macOS `say --interactive` feature only.
+    if chati_is_mac; then
+        colors_line="you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME · tts=$SAY_COLORS  (/color to change)"
+    else
+        colors_line="you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME  (/color to change)"
+    fi
     cat << EOF
 
 Current Chati Settings:
@@ -1278,8 +1309,8 @@ Current Chati Settings:
 🔎 Web:      $WEB_MODE
 💭 Thinking: $THINK_MODE   (/think — show reasoning; reasoning models only)
 🐚 Shell:    $agent_status
-🗣️  Talk:     $VOICE_MODE (Voice: $DEFAULT_VOICE, Speed: ${SAY_SPEED}x, Colors: $SAY_COLORS)
-🎨 Colors:   you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME · tts=$SAY_COLORS  (/color to change)
+🗣️  Talk:     $talk_line
+🎨 Colors:   $colors_line
 📅 Session:  $curr_sess
 🎭 Persona:  $system_prompt_text
 
@@ -1636,7 +1667,11 @@ while true; do
             /batch|/b)   macro_sola "$cmd_args" ;;
             /talk|/t)
                 if [[ "$VOICE_MODE" == "ON" ]]; then VOICE_MODE="OFF"; else VOICE_MODE="ON"; fi
-                echo "🗣️  Auto-Voice: $VOICE_MODE" ;;
+                echo "🗣️  Auto-Voice: $VOICE_MODE"
+                if [[ "$VOICE_MODE" == "ON" ]] && ! tts_available; then
+                    echo "   ⚠️  No TTS engine on this machine — nothing will be spoken."
+                    echo "      Install one: sudo apt install speech-dispatcher  (or espeak-ng)"
+                fi ;;
             /color)
                 # ONE place for every color: chat text (you/ai) + the voice/TTS
                 # highlight. `/color` with no args prints a menu of all of them.
@@ -1900,7 +1935,10 @@ while true; do
                 fi
                 ;;
             /voice)
-                if [[ -z "$cmd_args" ]]; then
+                if ! chati_is_mac; then
+                    echo "🗣️  Named TTS voices are a macOS feature; on Linux chati uses the"
+                    echo "    system default voice (speech-dispatcher/espeak). /voice does nothing here."
+                elif [[ -z "$cmd_args" ]]; then
                     echo "🗣️  Available macOS voices:"
                     say -v "?"
                     echo ""

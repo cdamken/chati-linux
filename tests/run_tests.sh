@@ -302,6 +302,24 @@ test_uv_gated_on_minimal() {
 }
 run_test "setup.sh skips uv on --minimal (no WebUI/SearXNG)" test_uv_gated_on_minimal
 
+# Talk/TTS is honest about the platform: macOS-only bits (named voices, say's
+# interactive highlight colors) are hidden on Linux, and with no engine the
+# settings say "unavailable" instead of showing voice/speed options.
+test_tts_platform_honesty() {
+    cd "$PROJECT_DIR" || return 1
+    grep -qE '^tts_available\(\)' "$PROJECT_DIR/chati" \
+        || { echo "chati should define a tts_available() helper" >&2; return 1; }
+    grep -q 'unavailable (no TTS engine' "$PROJECT_DIR/chati" \
+        || { echo "settings should mark Talk unavailable when no TTS engine" >&2; return 1; }
+    # /voice must not call macOS `say` on Linux.
+    grep -q 'Named TTS voices are a macOS feature' "$PROJECT_DIR/chati" \
+        || { echo "/voice should be guarded as macOS-only on Linux" >&2; return 1; }
+    # The tts= highlight colors are shown only on macOS.
+    grep -q 'tts= highlight colors are a macOS' "$PROJECT_DIR/chati" \
+        || { echo "tts= colors line should be macOS-gated" >&2; return 1; }
+}
+run_test "Talk/TTS hides macOS-only bits on Linux, honest when no engine" test_tts_platform_honesty
+
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from

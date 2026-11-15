@@ -721,10 +721,12 @@ check_deps() {
     local cmd
     for cmd in tesseract magick; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo "Error: Required command '$cmd' not found."
-            echo "Please install:"
-            echo "  tesseract: brew install tesseract tesseract-lang"
-            echo "  magick: brew install imagemagick"
+            echo "Error: Required command '$cmd' not found." >&2
+            if [[ "$(uname -s)" == "Darwin" ]]; then
+                echo "Please install:  brew install tesseract tesseract-lang imagemagick" >&2
+            else
+                echo "Please install:  sudo apt install tesseract-ocr imagemagick   (Debian/Ubuntu)" >&2
+            fi
             exit 1
         fi
     done
