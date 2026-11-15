@@ -250,6 +250,25 @@ test_update_applies_setup() {
 }
 run_test "chati --update applies setup, idempotently (#70 follow-up)" test_update_applies_setup
 
+# --system links chati for all users (/usr/local/bin via sudo) on Linux, while
+# keeping per-user data. Static checks: flag parsed, documented, and the link
+# step targets /usr/local/bin with sudo, gated behind SYSTEM_INSTALL.
+test_setup_system_flag() {
+    cd "$PROJECT_DIR" || return 1
+    grep -qE '^[[:space:]]*--system\)' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh should parse a --system flag" >&2; return 1; }
+    grep -qE 'SYSTEM_INSTALL=0' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh should default SYSTEM_INSTALL=0" >&2; return 1; }
+    grep -q '/usr/local/bin' "$PROJECT_DIR/setup.sh" \
+        && grep -qE 'link_run\(\)' "$PROJECT_DIR/setup.sh" \
+        && grep -qE 'SYSTEM_LINK" -eq 1 \]\] && sudo|SYSTEM_LINK" -eq 1 \]\]; then sudo' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh --system must link into /usr/local/bin via sudo (link_run)" >&2; return 1; }
+    local out; out=$(./setup.sh --help 2>&1) || return 1
+    assert_match "$out" "system" "setup --system in help" \
+        && assert_match "$out" "ALL users" "setup --system explains all-users scope" || return 1
+}
+run_test "setup.sh --system links into /usr/local/bin for all users" test_setup_system_flag
+
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from

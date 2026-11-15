@@ -47,6 +47,7 @@ MODEL_EXPLICIT=0                 # set to 1 when the user forces --model
 CHAT_MODEL="$DEFAULT_CHAT_MODEL"
 WANT_EXTRA_MODELS=1              # pull the big general models by default (--no-extra-models to skip)
 FORCE_MODELS=0                   # 1 for --force-models: pull the big models even on a low-RAM box
+SYSTEM_INSTALL=0                 # 1 for --system: link into /usr/local/bin for all users (Linux; uses sudo)
 
 # Detect unified memory (GB) and pick a model that fits. Apple Silicon shares
 # RAM between CPU and GPU, so the model must leave room for the OS. gemma4:26b
@@ -125,6 +126,10 @@ the OpenWebUI browser app, and a local SearXNG for /web — all started.
 
   ./setup.sh                brew deps + Ollama + model + OpenWebUI + SearXNG
   ./setup.sh --minimal      CLI only — skip OpenWebUI and SearXNG (still installs full deps)
+  ./setup.sh --system       link 'chati' into /usr/local/bin for ALL users (Linux;
+                             uses sudo). Each user still gets their own config and
+                             history. On a shared server that already runs Ollama,
+                             combine with --minimal --no-pull. No effect on macOS.
   ./setup.sh --client [HOST] [--searxng URL]
                              FULL client (remote Ollama): chat + local OCR + /web
                              via a remote SearXNG. No local server/models/WebUI.
@@ -181,6 +186,7 @@ while [[ $# -gt 0 ]]; do
         --force-models)    FORCE_MODELS=1 ;;      # pull the big models even on a low-RAM box
         --update)    UPDATE_MODE=1 ;;   # re-apply over an existing install (used by `chati --upgrade`)
         --force-webui) FORCE_WEBUI=1 ;; # force a clean OpenWebUI venv reinstall
+        --system)    SYSTEM_INSTALL=1 ;; # link into /usr/local/bin for all users (Linux; uses sudo)
         --model)     CHAT_MODEL="${2:?--model needs a model name}"; MODEL_EXPLICIT=1; shift ;;
         --client)    CLIENT_ONLY=1; CLIENT_MODE="full"
                      if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
@@ -551,19 +557,35 @@ ok "Scripts are executable"
 # ~/.local/bin on Linux). chati resolves symlinks to locate its repo, so it
 # works from any directory. Everything else is a `chati <subcommand>`.
 step "Linking 'chati' onto your PATH"
-# macOS links into Homebrew's bin (already on PATH); Linux uses ~/.local/bin.
+# macOS links into Homebrew's bin (already on PATH); Linux uses ~/.local/bin,
+# or /usr/local/bin for all users with --system (links via sudo). chati resolves
+# the symlink to find its repo, so with --system every user needs read access to
+# $REPO_ROOT — a shared path like /opt/chati-linux is sturdier than a user home.
+# A system install (Linux + --system) links into /usr/local/bin, which needs
+# root; link_run runs the symlink step with sudo there, plainly otherwise. A
+# function (not a "$LINK_SUDO" variable) stays shellcheck-clean and safe under
+# `set -u` on bash 3.2.
+SYSTEM_LINK=0
+[[ "$SYSTEM_INSTALL" -eq 1 && "$CHATI_PLATFORM" != macos ]] && SYSTEM_LINK=1
+link_run() { if [[ "$SYSTEM_LINK" -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
 if [[ "$CHATI_PLATFORM" == macos ]]; then
     LINK_BIN="$(brew --prefix)/bin"
+elif [[ "$SYSTEM_LINK" -eq 1 ]]; then
+    LINK_BIN="/usr/local/bin"
+    case "$REPO_ROOT" in
+        /home/*|/Users/*|"$HOME"/*) warn "System install from a user home ($REPO_ROOT): other users need read access to it. A shared path like /opt/chati-linux is sturdier." ;;
+    esac
 else
     LINK_BIN="$HOME/.local/bin"; mkdir -p "$LINK_BIN"
 fi
 # Clean up the old ailocal symlink from pre-1.36 installs (ailocal is gone).
-[[ -L "$LINK_BIN/ailocal" ]] && rm -f "$LINK_BIN/ailocal" 2>/dev/null
-if ln -sf "$REPO_ROOT/chati" "$LINK_BIN/chati" 2>/dev/null; then
-    ok "Linked into $LINK_BIN — run 'chati' from anywhere"
+[[ -L "$LINK_BIN/ailocal" ]] && link_run rm -f "$LINK_BIN/ailocal" 2>/dev/null
+if link_run ln -sf "$REPO_ROOT/chati" "$LINK_BIN/chati" 2>/dev/null; then
+    [[ "$SYSTEM_LINK" -eq 1 ]] && _scope=" (all users)" || _scope=""
+    ok "Linked into $LINK_BIN — run 'chati' from anywhere${_scope}"
     case ":$PATH:" in
         *":$LINK_BIN:"*) : ;;
-        *) warn "$LINK_BIN is not on your PATH. Add it (e.g. in ~/.bashrc): export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+        *) warn "$LINK_BIN is not on your PATH. Add it (e.g. in ~/.bashrc): export PATH=\"$LINK_BIN:\$PATH\"" ;;
     esac
 else
     warn "Couldn't link into $LINK_BIN — run it as ./chati, or add the repo to your PATH."
