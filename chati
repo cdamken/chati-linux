@@ -30,14 +30,14 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.3"
+CHATI_VERSION="1.38.4"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
 # --- Self-update: check GitHub's latest RELEASE, update via git pull ---------
 # All bash + curl + (jq or grep). Opt out of the startup check with
 # CHATI_NO_UPDATE_CHECK=1; point at a fork with CHATI_REPO=owner/name.
-CHATI_REPO="${CHATI_REPO:-cdamken/chati}"
+CHATI_REPO="${CHATI_REPO:-cdamken/chati-linux}"
 
 # Latest release tag from GitHub, without the leading "v". Empty on any failure.
 chati_latest_version() {

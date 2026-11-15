@@ -334,6 +334,15 @@ test_upgrade_system_sudo() {
 }
 run_test "chati --upgrade re-runs with sudo on a system install" test_upgrade_system_sudo
 
+# The fork must check its OWN releases, not upstream's, or --upgrade never sees a
+# new chati-linux version (upstream's latest differs).
+test_update_checks_fork_repo() {
+    cd "$PROJECT_DIR" || return 1
+    grep -qE 'CHATI_REPO="\$\{CHATI_REPO:-cdamken/chati-linux\}"' "$PROJECT_DIR/chati" \
+        || { echo "chati should default CHATI_REPO to the fork (cdamken/chati-linux)" >&2; return 1; }
+}
+run_test "self-update checks the fork's own releases, not upstream" test_update_checks_fork_repo
+
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from
