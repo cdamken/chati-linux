@@ -525,8 +525,10 @@ else
     sudo apt-get install -y curl jq lynx tesseract-ocr tesseract-ocr-eng \
         imagemagick ghostscript poppler-utils python3 python3-venv
     ok "apt packages installed"
-    # uv (SearXNG venvs) and Ollama via their official Linux installers if absent.
-    if ! command -v uv >/dev/null 2>&1; then
+    # uv drives the OpenWebUI and SearXNG Python venvs; skip it on a --minimal /
+    # client box that installs neither (nothing else uses it). Ollama via its
+    # official Linux installer if absent.
+    if [[ "$WANT_WEBUI" -eq 1 || "$WANT_SEARXNG" -eq 1 ]] && ! command -v uv >/dev/null 2>&1; then
         step "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; ok "uv installed"
     fi
     if ! command -v ollama >/dev/null 2>&1; then

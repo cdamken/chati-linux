@@ -294,6 +294,14 @@ test_bootstrap_install_sh() {
 }
 run_test "install.sh bootstrap: download, install, run as root (documented)" test_bootstrap_install_sh
 
+# uv is only for the OpenWebUI/SearXNG venvs, so a --minimal box must not pull it.
+test_uv_gated_on_minimal() {
+    cd "$PROJECT_DIR" || return 1
+    grep -qE 'WANT_WEBUI" -eq 1 \|\| "\$WANT_SEARXNG" -eq 1 \]\] && ! command -v uv' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh should install uv only when WebUI or SearXNG is wanted" >&2; return 1; }
+}
+run_test "setup.sh skips uv on --minimal (no WebUI/SearXNG)" test_uv_gated_on_minimal
+
 test_ollama_proc_pattern() {
     # The process-match pattern must catch ollama at a path/word boundary
     # but NOT a lookalike like "myollama serve". Eval the real value from
