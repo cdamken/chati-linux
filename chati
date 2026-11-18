@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.4"
+CHATI_VERSION="1.38.5"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -376,7 +376,18 @@ reload_settings_announce() {
     fi
 }
 # Clean-exit handler: flush command history AND the current session's settings.
+# Disable terminal mouse reporting. chati never turns it on, but a command the
+# LLM runs in agent mode (htop/btop/nvtop/less…) can leave it enabled — then
+# the scroll wheel sends SGR events (e.g. "64;35;33M") straight into the "> "
+# read prompt as text instead of scrolling the terminal. Reset it before every
+# prompt and on exit so scrolling and the prompt behave normally.
+term_mouse_off() {
+    [[ -t 1 ]] || return 0
+    printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l'
+}
+
 chati_on_exit() {
+    term_mouse_off 2>/dev/null
     history -w "$HISTFILE" 2>/dev/null
     persist_session_settings 2>/dev/null
 }
@@ -1570,6 +1581,7 @@ while true; do
     # Colour what the user types (helps find your own lines in a long
     # transcript). Emitted around read, not inside the prompt string, so
     # readline's width math for "> " stays correct.
+    term_mouse_off   # clear any mouse-tracking an agent command left on
     [[ -n "$USER_COLOR" ]] && printf '%s' "$USER_COLOR"
     read -e -rp "> " msg; _read_rc=$?
     [[ -n "$USER_COLOR" ]] && printf '%s' "$RESET_COLOR"
@@ -2145,6 +2157,7 @@ while true; do
                 # without a scary banner while risky commands still get flagged.
                 agent_cmd_is_safe "$agent_cmd" \
                     || echo "   ⚠️  This may modify files, processes, network or system — review it."
+                term_mouse_off   # a prior agent command may have left mouse-tracking on
                 read -rp "✅ Execute? (y/N): " confirm
                 if (( _chati_interrupted )); then echo; echo "🛑 Stopped."; break; fi
                 agent_confirmed "$confirm" && run_it=1

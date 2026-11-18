@@ -321,6 +321,24 @@ test_tts_platform_honesty() {
 }
 run_test "Talk/TTS hides macOS-only bits on Linux, honest when no engine" test_tts_platform_honesty
 
+test_mouse_reporting_reset() {
+    cd "$PROJECT_DIR" || return 1
+    local f="$PROJECT_DIR/chati"
+    # Helper exists and emits the mouse-disable DECRST sequences.
+    grep -qE '^term_mouse_off\(\)' "$f" \
+        || { echo "chati should define term_mouse_off()" >&2; return 1; }
+    grep -q '1000l' "$f" && grep -q '1006l' "$f" \
+        || { echo "term_mouse_off must disable mouse reporting (1000l/1006l)" >&2; return 1; }
+    # Called before the interactive prompt, the Execute? prompt, and on exit.
+    grep -q 'term_mouse_off   # clear any mouse-tracking' "$f" \
+        || { echo "term_mouse_off must run before the \"> \" read prompt" >&2; return 1; }
+    grep -q 'term_mouse_off   # a prior agent command' "$f" \
+        || { echo "term_mouse_off must run before the Execute? prompt" >&2; return 1; }
+    awk '/^chati_on_exit\(\)/{f=1} f&&/term_mouse_off/{print;exit}' "$f" | grep -q term_mouse_off \
+        || { echo "chati_on_exit must reset mouse reporting" >&2; return 1; }
+}
+run_test "scroll-wheel mouse reporting is reset before prompts and on exit" test_mouse_reporting_reset
+
 # chati --upgrade on a system install (root-owned prefix) re-runs itself with
 # sudo so a normal user can upgrade, then re-applies with --system.
 test_upgrade_system_sudo() {
