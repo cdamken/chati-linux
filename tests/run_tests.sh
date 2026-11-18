@@ -349,6 +349,16 @@ test_upgrade_system_sudo() {
         || { echo "self-update should re-exec with sudo on a system install" >&2; return 1; }
     grep -q 'setup_flags="--update --system --yes"' "$PROJECT_DIR/chati" \
         || { echo "self-update should re-apply with --system for a system install" >&2; return 1; }
+    # The sudo re-exec must come BEFORE the git rev-parse check: git refuses a
+    # root-owned repo as "dubious ownership", so checking git first would wrongly
+    # report "not a git checkout" and never escalate. Detect .git by file test.
+    grep -qE '\-e "\$CHATI_DIR/\.git" &&.*id -u' "$PROJECT_DIR/chati" \
+        || { echo "system-install detection must file-test .git, not rely on git rev-parse" >&2; return 1; }
+    local sudo_ln git_ln
+    sudo_ln=$(grep -n 'exec sudo "\$CHATI_DIR/chati" --upgrade' "$PROJECT_DIR/chati" | head -1 | cut -d: -f1)
+    git_ln=$(grep -n "isn't a git checkout" "$PROJECT_DIR/chati" | head -1 | cut -d: -f1)
+    [[ -n "$sudo_ln" && -n "$git_ln" && "$sudo_ln" -lt "$git_ln" ]] \
+        || { echo "sudo re-exec must precede the git-checkout check (dubious ownership)" >&2; return 1; }
 }
 run_test "chati --upgrade re-runs with sudo on a system install" test_upgrade_system_sudo
 
