@@ -339,6 +339,23 @@ test_mouse_reporting_reset() {
 }
 run_test "scroll-wheel mouse reporting is reset before prompts and on exit" test_mouse_reporting_reset
 
+test_no_hardcoded_mac() {
+    cd "$PROJECT_DIR" || return 1
+    local f="$PROJECT_DIR/chati"
+    # User-facing strings must not assume macOS. "your Mac" is only allowed via
+    # the $CHATI_OS_LABEL variable, never as a literal in echo/help/prompt text.
+    if grep -nE 'your Mac|user'\''s Mac|macOS shell harness' "$f" | grep -vq '#'; then
+        echo "found a hardcoded 'Mac' in user-facing text (use \$CHATI_OS_LABEL or 'computer')" >&2
+        grep -nE 'your Mac|user'\''s Mac|macOS shell harness' "$f" | grep -v '#' >&2
+        return 1
+    fi
+    grep -q 'CHATI_OS_LABEL="Mac"' "$f" \
+        || { echo "chati should set a platform label (CHATI_OS_LABEL)" >&2; return 1; }
+    grep -q 'on your \$CHATI_OS_LABEL' "$f" \
+        || { echo "the auto-accept warning should use \$CHATI_OS_LABEL, not 'Mac'" >&2; return 1; }
+}
+run_test "no hardcoded 'Mac' in user-facing text (platform honesty)" test_no_hardcoded_mac
+
 # chati --upgrade on a system install (root-owned prefix) re-runs itself with
 # sudo so a normal user can upgrade, then re-applies with --system.
 test_upgrade_system_sudo() {

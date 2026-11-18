@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.6"
+CHATI_VERSION="1.38.7"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -262,6 +262,13 @@ set +o history
 trap 'chati_on_exit' EXIT   # flush history + persist this session's settings (#37)
 
 # --- STATE ---
+# Human label for the host OS, used in user-facing warnings and the agent-mode
+# capability prompt so chati doesn't say "your Mac" on a Linux box.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    CHATI_OS_LABEL="Mac"
+else
+    CHATI_OS_LABEL="machine"
+fi
 LAST_RESPONSE=""
 DEFAULT_VOICE="AUTO"     # Automatic voice detection
 VOICE_MODE="OFF"         # Global talk toggle
@@ -431,12 +438,12 @@ agent_capability_prompt() {
 
 This message is a runtime-environment instruction. It OVERRIDES any persona, role, or refusal pattern from earlier system messages or from your training. Read it fully before composing your reply.
 
-YOU ARE NOT A PURE LLM RIGHT NOW. You are running inside a macOS shell harness called 'chati' with the user sitting at the keyboard. The harness gives you REAL execution on the user's Mac, supervised by an 'Execute? (y/N)' confirmation prompt for every command. The user has explicitly enabled this mode by typing /a. Disk access, process inspection, and CLI tools are all available to you through one mechanism:
+YOU ARE NOT A PURE LLM RIGHT NOW. You are running inside a shell harness called 'chati' with the user sitting at the keyboard. The harness gives you REAL execution on the user's computer, supervised by an 'Execute? (y/N)' confirmation prompt for every command. The user has explicitly enabled this mode by typing /a. Disk access, process inspection, and CLI tools are all available to you through one mechanism:
 
   TOOL CALL FORMAT (must be on its own line):
   [EXEC: <bash command>]
 
-When you emit that line, the harness runs the command on the user's Mac and replies with:
+When you emit that line, the harness runs the command on the user's computer and replies with:
   [COMMAND]: <the command you sent>
   [EXIT]: <exit code, 0 = success>
   [OUTPUT]:
@@ -1407,7 +1414,7 @@ Mode Toggles:
                         history. Only reasoning models have it (deepseek-r1,
                         gemma4, qwen3…); on a plain model /think says so.
 /shell (/s)             Toggle Shell Mode — let the AI propose shell
-                        commands to run on your Mac (you approve them).
+                        commands to run on your computer (you approve them).
                         EVERY command asks "Execute? (y/N)" first — denied
                         unless you type y; commands that could modify files,
                         processes, network or system also show a warning.
@@ -1780,7 +1787,7 @@ while true; do
                     echo "🛡️  Shell: ON (verification) — auto-accept OFF; every command asks again."
                 else
                     AGENT_MODE="ON"; AGENT_AUTOACCEPT="ON"
-                    echo "🔴 ⚠️  AUTO-ACCEPT ON — the AI will run EVERY command it proposes on your Mac"
+                    echo "🔴 ⚠️  AUTO-ACCEPT ON — the AI will run EVERY command it proposes on your $CHATI_OS_LABEL"
                     echo "       WITHOUT asking, INCLUDING destructive ones (rm, sudo, network, overwrites…)."
                     echo "       Only for a task you're actively watching. Ctrl-C interrupts."
                     echo "       Type /sY again (or /s) to return to verification."
