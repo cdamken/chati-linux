@@ -356,6 +356,34 @@ test_no_hardcoded_mac() {
 }
 run_test "no hardcoded 'Mac' in user-facing text (platform honesty)" test_no_hardcoded_mac
 
+test_sticky_global_settings() {
+    cd "$PROJECT_DIR" || return 1
+    local f="$PROJECT_DIR/chati"
+    # Structure: the flag, the key, the command, and the load/save branches.
+    grep -q 'GLOBAL_SETTINGS="OFF"' "$f" \
+        || { echo "GLOBAL_SETTINGS flag should default OFF" >&2; return 1; }
+    grep -q 'GLOBAL_SETTINGS ' "$f" || grep -q 'GLOBAL_SETTINGS VOICE_MODE' "$f" \
+        || { echo "GLOBAL_SETTINGS must be a persisted settings key" >&2; return 1; }
+    grep -qE '^\s+/sticky\)' "$f" \
+        || { echo "chati should define a /sticky command" >&2; return 1; }
+    awk '/^persist_session_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON/{print;exit}' "$f" | grep -q ON \
+        || { echo "persist must write the shared file in global mode" >&2; return 1; }
+    awk '/^load_active_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON.*return/{print;exit}' "$f" | grep -q return \
+        || { echo "load must skip the per-session overlay in global mode" >&2; return 1; }
+    # Functional: in an isolated data home, /sticky on keeps shell across /new.
+    local d; d=$(mktemp -d)
+    local out
+    out=$(CHATI_DATA_HOME="$d/data" bash -c 'printf "/sticky on\n/s\n/new\n/bye\n" | "'"$f"'" 2>/dev/null')
+    rm -rf "$d"
+    printf '%s' "$out" | grep -q 'Sticky config ON' \
+        || { echo "/sticky on should confirm" >&2; return 1; }
+    # The "Shell mode is OFF in this session" warning must NOT appear after /new.
+    if printf '%s' "$out" | grep -q 'Shell mode is OFF in this session'; then
+        echo "sticky mode should not reset shell on /new" >&2; return 1
+    fi
+}
+run_test "sticky mode shares one config across all sessions (no per-session reset)" test_sticky_global_settings
+
 # chati --upgrade on a system install (root-owned prefix) re-runs itself with
 # sudo so a normal user can upgrade, then re-applies with --system.
 test_upgrade_system_sudo() {

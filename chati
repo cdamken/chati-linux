@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.38.7"
+CHATI_VERSION="1.39.0"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -276,6 +276,7 @@ WEB_MODE="OFF"           # Global web search toggle
 THINK_MODE="OFF"         # Show the model's reasoning (/think); reasoning models only
 AGENT_MODE="OFF"         # Global autonomous agent toggle
 AGENT_AUTOACCEPT="OFF"   # /sY: run EVERY proposed command without asking
+GLOBAL_SETTINGS="OFF"    # /sticky: one shared config for ALL sessions (no per-session state)
 FORCE_LANG="auto"        # Language forcing (auto, en, es, de, etc.)
 SAY_COLORS="white/green" # Default colors for speech highlighting
 SAY_SPEED=1.0            # Speech speed multiplier (1.0 = 200 wpm)
@@ -317,7 +318,7 @@ update_say_rate() {
 # session inherits the editable global DEFAULTS (see /defaults). Model + prompt
 # are handled separately (prompt already per-session; model default is global).
 CHATI_SETTINGS_KEYS=(FORCE_LANG WEB_MODE THINK_MODE AGENT_MODE AGENT_AUTOACCEPT \
-                     VOICE_MODE DEFAULT_VOICE SAY_SPEED SAY_COLORS \
+                     GLOBAL_SETTINGS VOICE_MODE DEFAULT_VOICE SAY_SPEED SAY_COLORS \
                      USER_COLOR_NAME AI_COLOR_NAME)
 DEFAULTS_SETTINGS_FILE="${DEFAULTS_SETTINGS_FILE:-$CHATI_DATA_HOME/defaults_settings}"
 # Factory snapshot of the built-in toggle values (as initialized above), captured
@@ -350,6 +351,11 @@ settings_read() {
 settings_write "$BUILTIN_SETTINGS_FILE"
 # Save the ACTIVE session's toggles (call before switching away / at exit).
 persist_session_settings() {
+    # Global mode (/sticky): one shared config. Write every change to the global
+    # defaults file so ALL sessions see it — no per-session divergence.
+    if [[ "$GLOBAL_SETTINGS" == "ON" ]]; then
+        settings_write "$DEFAULTS_SETTINGS_FILE"; return 0
+    fi
     local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
     [[ -n "$s" ]] && settings_write "$HISTORY_DIR/${s}_settings"
 }
@@ -363,6 +369,10 @@ load_active_settings() {
     # fresh session could silently start with Shell/auto-accept still armed.
     settings_read "$BUILTIN_SETTINGS_FILE" 2>/dev/null || true
     settings_read "$DEFAULTS_SETTINGS_FILE" 2>/dev/null || true
+    # Global mode (/sticky): the shared config IS the defaults file; skip the
+    # per-session overlay so every session is configured identically. Set by the
+    # defaults read above, so re-check it here.
+    [[ "$GLOBAL_SETTINGS" == "ON" ]] && return 0
     local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
     [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" 2>/dev/null || true
 }
@@ -1350,6 +1360,7 @@ Current Chati Settings:
 🔎 Web:      $WEB_MODE
 💭 Thinking: $THINK_MODE   (/think — show reasoning; reasoning models only)
 🐚 Shell:    $agent_status
+🔗 Sticky:   $GLOBAL_SETTINGS   (/sticky — one shared config for all sessions)
 🗣️  Talk:     $talk_line
 🎨 Colors:   $colors_line
 📅 Session:  $curr_sess
@@ -1374,6 +1385,9 @@ Core:
 /defaults [save|clear]  Show / save / clear the global defaults that NEW
                         sessions inherit. (Each session's settings are saved
                         and restored automatically.)
+/sticky [on|off]        One shared config for ALL sessions — configure once,
+                        every session uses it (no per-session reset). Includes
+                        Shell/auto-accept, so use with care on a server.
 
 Session Management:
 -------------------
@@ -1659,6 +1673,26 @@ while true; do
                         echo "🌐 No global defaults set — new sessions use built-in defaults."
                     fi
                     echo "   /defaults save   (make the current settings the default)   ·   /defaults clear"
+                fi ;;
+            /sticky)
+                # One shared config for ALL sessions (no per-session state). When ON,
+                # every change is written to the global file and every session loads
+                # it — so you configure once, not per session. (Uses if/elif, not a
+                # nested case block, so the main dispatcher stays a single switch.)
+                if [[ "$cmd_args" == on || "$cmd_args" == ON ]]; then
+                    GLOBAL_SETTINGS="ON"
+                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    echo "🔗 Sticky config ON — settings are now shared across ALL sessions."
+                    echo "   Change anything once and every session (new or old) uses it."
+                    echo "   Note: this includes Shell/auto-accept, so /sY would persist everywhere. /sticky off to go back to per-session."
+                elif [[ "$cmd_args" == off || "$cmd_args" == OFF ]]; then
+                    GLOBAL_SETTINGS="OFF"
+                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    persist_session_settings
+                    echo "🔓 Sticky config OFF — each session keeps its own settings again."
+                else
+                    echo "🔗 Sticky config: $GLOBAL_SETTINGS  (one shared config for all sessions)"
+                    echo "   /sticky on   ·   /sticky off"
                 fi ;;
             /persona)
                 prompt_file=$(current_session_prompt_file)
