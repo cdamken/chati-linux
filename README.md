@@ -69,6 +69,8 @@ Example — full install with the web UI: `CHATI_SETUP_ARGS="" curl -fsSL …/in
 
 Re-running the one-liner updates an existing install in place. **Per-user instead of all-users?** Clone the repo and run `./setup.sh` without `--system` (links into your own `~/.local/bin`). **Just one machine for yourself on Linux?** Same per-user flow.
 
+**Upgrading:** `chati --upgrade` follows GitHub releases (git pull + re-apply; it auto-elevates with `sudo` on a root-owned `/opt` install). To test straight from a branch instead, `chati --track main` makes `--upgrade` follow `main`'s latest commit (no release needed); `chati --track off` restores releases.
+
 ## Philosophy: bash as the conductor
 
 The point of this project is to show how far a language from 1989 gets when it orchestrates the right specialized tools. **~4,400 lines of bash** drive the whole experience — streaming LLM chat, RAG web research, session memory with LLM compression, TTS, OCR, a Shell Mode with supervised command execution — and every hard sub-problem is delegated to a battle-tested Unix tool that does one thing well:
