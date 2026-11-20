@@ -384,6 +384,38 @@ test_sticky_global_settings() {
 }
 run_test "sticky mode shares one config across all sessions (no per-session reset)" test_sticky_global_settings
 
+test_upgrade_can_track_git_ref() {
+    cd "$PROJECT_DIR" || return 1
+    local f="$PROJECT_DIR/chati"
+    grep -qE '^chati_upgrade_ref\(\)' "$f" \
+        || { echo "chati should define chati_upgrade_ref()" >&2; return 1; }
+    grep -qE '^\s+--track\)' "$f" \
+        || { echo "chati should have a --track command" >&2; return 1; }
+    # self-update must branch on the ref and reset onto the fetched ref.
+    grep -q 'reset --hard --quiet FETCH_HEAD' "$f" \
+        || { echo "tracking upgrade must hard-reset onto the fetched ref" >&2; return 1; }
+    # The clean-tree guard must ignore untracked files (e.g. .upgrade_ref).
+    grep -q 'status --porcelain --untracked-files=no' "$f" \
+        || { echo "clean-tree check must ignore untracked files" >&2; return 1; }
+    # .upgrade_ref must be gitignored so a reset never fights it.
+    grep -q '^\.upgrade_ref$' "$PROJECT_DIR/.gitignore" \
+        || { echo ".upgrade_ref must be in .gitignore" >&2; return 1; }
+    # Functional: set/read/clear the track in an isolated copy of the tree.
+    local d; d=$(mktemp -d); cp -a "$PROJECT_DIR/." "$d/repo" 2>/dev/null
+    local set_out chk_out off_out
+    set_out=$("$d/repo/chati" --track main 2>&1)
+    chk_out=$("$d/repo/chati" --check-update 2>&1)
+    off_out=$("$d/repo/chati" --track off 2>&1)
+    rm -rf "$d"
+    printf '%s' "$set_out" | grep -q "tracks git ref 'main'" \
+        || { echo "--track main should set the ref" >&2; return 1; }
+    printf '%s' "$chk_out" | grep -q "tracks git ref 'main'" \
+        || { echo "--check-update should report the tracked ref" >&2; return 1; }
+    printf '%s' "$off_out" | grep -q 'tracks releases' \
+        || { echo "--track off should clear the ref" >&2; return 1; }
+}
+run_test "chati --upgrade can track a git ref (--track) for testing" test_upgrade_can_track_git_ref
+
 # chati --upgrade on a system install (root-owned prefix) re-runs itself with
 # sudo so a normal user can upgrade, then re-applies with --system.
 test_upgrade_system_sudo() {

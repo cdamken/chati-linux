@@ -63,3 +63,6 @@ parse_gbm*.py
 
 # Compiled Apple Vision OCR helper (built by setup.sh from docr/ocr_vision.swift)
 docr/ocrvision
+
+# chati --track: which git ref --upgrade follows (per-install, never committed)
+.upgrade_ref
