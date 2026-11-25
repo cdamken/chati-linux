@@ -1341,11 +1341,11 @@ test_compress_model_override() {
 }
 run_test "compress_model honours COMPRESS_MODEL override" test_compress_model_override
 
-# --- aux pickers on a chat+embedder-only box (snoopy6 target state) ---
-# snoopy6 will keep ONLY gemma4:26b-a4b-it-qat + bge-m3 installed. None of the
-# small preference models (llama3.2:3b, llama3.1:8b, ...) are present, so every
-# auxiliary picker must fall back to the active model (gemma4) and must NEVER
-# pick bge-m3 — an embedder can't chat and would yield empty/garbage output.
+# --- aux pickers on a chat+embedder-only box ---
+# A box that keeps ONLY a big chat model + an embedder (here gemma4:26b-a4b-it-qat
+# + bge-m3) has none of the small preference models (llama3.2:3b, llama3.1:8b, ...),
+# so every auxiliary picker must fall back to the active model (gemma4) and must
+# NEVER pick bge-m3: an embedder can't chat and would yield empty/garbage output.
 test_aux_pickers_fall_back_to_chat_model_not_embedder() {
     local orig_ol; orig_ol=$(declare -f ollama 2>/dev/null)
     ollama() { [[ "$1" == "list" ]] && printf 'NAME\tID\ngemma4:26b-a4b-it-qat\tabc\nbge-m3:latest\tdef\n'; }
@@ -1361,7 +1361,7 @@ test_aux_pickers_fall_back_to_chat_model_not_embedder() {
     assert_eq "$dm" "gemma4:26b-a4b-it-qat" "decompose_model -> gemma4, not bge-m3" || rc=1
     return $rc
 }
-run_test "aux pickers fall back to chat model, never the embedder (snoopy6)" test_aux_pickers_fall_back_to_chat_model_not_embedder
+run_test "aux pickers fall back to chat model, never the embedder" test_aux_pickers_fall_back_to_chat_model_not_embedder
 
 # --- resolve_ollama_api: external Ollama endpoint (#39) ---
 test_resolve_ollama_api() {
