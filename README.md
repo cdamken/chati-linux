@@ -57,15 +57,20 @@ curl -fsSL https://raw.githubusercontent.com/cdamken/chati-linux/main/install.sh
 chati --version && chati --status
 ```
 
-Defaults are safe on a server that already runs Ollama: terminal chat only (no OpenWebUI/SearXNG services), and no models are pulled (it uses whatever Ollama already has). Tune it with environment variables before the pipe:
+Defaults are safe on a server that already runs Ollama: terminal chat only (no OpenWebUI/SearXNG services), and no models are pulled (it uses whatever Ollama already has). Tune it with flags **after `bash -s --`** (an environment variable set before the pipe attaches to `curl`, not to the piped shell, and `sudo` scrubs the environment, so it never reaches the installer):
 
-| Variable | Default | What it does |
+| Flag | Default | What it does |
 |---|---|---|
-| `CHATI_SETUP_ARGS` | `--minimal --no-pull` | Args passed to `setup.sh --system`. Set to `""` for the full stack (OpenWebUI + SearXNG + a model). |
-| `CHATI_SYSTEM_PREFIX` | `/opt/chati-linux` | Where the shared checkout lives (must be readable by all users). |
-| `CHATI_BRANCH` | `main` | Branch to install. |
+| `--full` | off (`--minimal --no-pull`) | Install the full stack: OpenWebUI + SearXNG + a model. |
+| `--prefix PATH` | `/opt/chati-linux` | Where the shared checkout lives (must be readable by all users). |
+| `--branch NAME` | `main` | Branch to install. |
+| `--setup-args "…"` | `--minimal --no-pull` | Raw args for `setup.sh --system` (overrides `--full`). |
 
-Example — full install with the web UI: `CHATI_SETUP_ARGS="" curl -fsSL …/install.sh | sudo bash`
+Example — full install with the web UI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cdamken/chati-linux/main/install.sh | sudo bash -s -- --full
+```
 
 Re-running the one-liner updates an existing install in place. **Per-user instead of all-users?** Clone the repo and run `./setup.sh` without `--system` (links into your own `~/.local/bin`). **Just one machine for yourself on Linux?** Same per-user flow.
 
