@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.40.18"
+CHATI_VERSION="1.40.19"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -474,10 +474,13 @@ settings_write() {
     for k in "${CHATI_SETTINGS_KEYS[@]}"; do printf '%s=%s\n' "$k" "${!k}" >> "$f"; done
 }
 # Write the GLOBAL defaults file, which EVERY new session inherits at startup.
-# Auto-accept (/sY — run every command WITHOUT asking) must never ride along into
-# a fresh session: that would silently defeat the per-session safety reset (#60),
-# so it is always persisted OFF here and stays a per-session, re-arm-each-time
-# toggle. Shell mode itself is fine to share (each command still prompts). (U6)
+# Auto-accept (/sY, run every command WITHOUT asking) must never ride along into
+# a FRESH session: one that has no prior live state would silently start with
+# "run everything without asking". So it is always persisted OFF here and never
+# enters the shared config. It still follows your LIVE sessions across /new,
+# /switch and /back (reload_settings_announce keeps it); this only stops a
+# brand-new session from inheriting it. Shell mode is fine to share (each command
+# still prompts). (U6)
 settings_write_global() {
     local f="$1"; [[ -z "$f" ]] && return 0
     local _save_auto="$AGENT_AUTOACCEPT"
@@ -1875,7 +1878,7 @@ while true; do
                 if [[ "$cmd_args" == save ]]; then
                     settings_write_global "$DEFAULTS_SETTINGS_FILE"
                     echo "💾 Saved current settings as the default for NEW sessions."
-                    [[ "$AGENT_AUTOACCEPT" == "ON" ]] && echo "   (Auto-accept stays per-session for safety; re-arm it with /sY where you want it.)"
+                    [[ "$AGENT_AUTOACCEPT" == "ON" ]] && echo "   (Auto-accept is never written into the defaults, so fresh sessions start without it. It stays armed in your live sessions until you turn it off with /sY.)"
                 elif [[ "$cmd_args" == clear || "$cmd_args" == reset ]]; then
                     rm -f "$DEFAULTS_SETTINGS_FILE"
                     echo "🧹 Cleared the global defaults (new sessions start from built-in defaults)."
@@ -1898,7 +1901,7 @@ while true; do
                     settings_write_global "$DEFAULTS_SETTINGS_FILE"
                     echo "🔗 Sticky config ON — settings are now shared across ALL sessions."
                     echo "   Change anything once and every session (new or old) uses it."
-                    echo "   Note: Shell mode is shared too, but auto-accept (/sY) stays per-session for safety — re-arm it where you want it."
+                    echo "   Note: Shell mode is shared too. Auto-accept (/sY) is never put in the shared config, so a fresh session won't start with it; once you arm it, it stays on across your sessions until you turn it off with /sY."
                 elif [[ "$cmd_args" == off || "$cmd_args" == OFF ]]; then
                     GLOBAL_SETTINGS="OFF"
                     settings_write_global "$DEFAULTS_SETTINGS_FILE"
