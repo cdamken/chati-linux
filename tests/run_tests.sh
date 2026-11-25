@@ -462,9 +462,10 @@ test_upgrade_can_track_git_ref() {
     printf '%s' "$off_out" | grep -q 'tracks releases' \
         || { echo "--track off should clear the ref" >&2; return 1; }
     # U2: a tracking reset --hard must not silently drop committed-but-unpushed
-    # work; the guard counts local commits ahead of the fetched ref and refuses.
-    grep -q 'rev-list --count "FETCH_HEAD..HEAD"' "$f" \
-        || { echo "tracking upgrade must refuse to discard local commits (U2)" >&2; return 1; }
+    # work; the guard counts commits not on any remote or tag (so a rewritten
+    # remote ref still resets cleanly) and refuses only on genuine local work.
+    grep -q 'rev-list --count HEAD --not --remotes --tags' "$f" \
+        || { echo "tracking upgrade must refuse to discard genuine local commits (U2)" >&2; return 1; }
 }
 run_test "chati --upgrade can track a git ref (--track) for testing" test_upgrade_can_track_git_ref
 

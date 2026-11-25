@@ -117,21 +117,24 @@ chati_self_update() {
     if [[ -n "$track_ref" ]]; then
         # Tracking mode: fetch the ref and hard-reset onto it (handles a rebased or
         # force-updated branch, which --ff-only can't). This is the test path.
-        if ! git -C "$CHATI_DIR" fetch --quiet origin "$track_ref" 2>/dev/null; then
-            echo "chati: git fetch of origin/$track_ref failed." >&2
+        #
+        # The reset is `--hard`, which is MEANT to follow a rewritten ref but would
+        # also silently drop genuine local commits that were never pushed. Tell the
+        # two apart: count commits reachable from HEAD but not from ANY remote-track
+        # ref or tag, computed BEFORE the fetch (so a force-push hasn't yet moved the
+        # remote ref out from under them). That is exactly never-pushed local work;
+        # rewritten remote history doesn't count. Refuse rather than discard it (U2).
+        local local_only
+        local_only=$(git -C "$CHATI_DIR" rev-list --count HEAD --not --remotes --tags 2>/dev/null)
+        if [[ "${local_only:-0}" -gt 0 ]]; then
+            echo "chati: $CHATI_DIR has $local_only local commit(s) not on any remote or tag;" >&2
+            echo "   a tracking update (reset --hard) would discard them. Push or branch them first:" >&2
+            echo "   git -C \"$CHATI_DIR\" log --oneline --not --remotes --tags" >&2
+            echo "   Then re-run, or force by hand:  git -C \"$CHATI_DIR\" reset --hard FETCH_HEAD" >&2
             return 1
         fi
-        # The reset below is `--hard`, which would silently drop any local commits
-        # that aren't on the tracked ref. The porcelain guard above only catches an
-        # unclean WORKING tree, not committed-but-unpushed work. Count those commits
-        # and refuse rather than discard them without a word (U2).
-        local ahead
-        ahead=$(git -C "$CHATI_DIR" rev-list --count "FETCH_HEAD..HEAD" 2>/dev/null)
-        if [[ "${ahead:-0}" -gt 0 ]]; then
-            echo "chati: $CHATI_DIR has $ahead local commit(s) not on origin/$track_ref;" >&2
-            echo "   a tracking update (reset --hard) would discard them. Push or branch them first:" >&2
-            echo "   git -C \"$CHATI_DIR\" log --oneline FETCH_HEAD..HEAD" >&2
-            echo "   Then re-run, or force by hand:  git -C \"$CHATI_DIR\" reset --hard FETCH_HEAD" >&2
+        if ! git -C "$CHATI_DIR" fetch --quiet origin "$track_ref" 2>/dev/null; then
+            echo "chati: git fetch of origin/$track_ref failed." >&2
             return 1
         fi
         if ! git -C "$CHATI_DIR" reset --hard --quiet FETCH_HEAD 2>/dev/null; then
