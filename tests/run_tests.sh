@@ -442,7 +442,9 @@ test_sticky_global_settings() {
     # Functional: in an isolated data home, /sticky on keeps shell across /new.
     local d; d=$(mktemp -d)
     local out
-    out=$(CHATI_DATA_HOME="$d/data" bash -c 'printf "/sticky on\n/s\n/new\n/bye\n" | "'"$f"'" 2>/dev/null')
+    # Hermetic: own data home, no GitHub update check, no real .env (localhost).
+    out=$(CHATI_DATA_HOME="$d/data" CHAT_ENV="$d/noenv" CHATI_NO_UPDATE_CHECK=1 \
+          bash -c 'printf "/sticky on\n/s\n/new\n/bye\n" | "'"$f"'" 2>/dev/null')
     rm -rf "$d"
     printf '%s' "$out" | grep -q 'Sticky config ON' \
         || { echo "/sticky on should confirm" >&2; return 1; }
@@ -470,11 +472,14 @@ test_upgrade_can_track_git_ref() {
     grep -q '^\.upgrade_ref$' "$PROJECT_DIR/.gitignore" \
         || { echo ".upgrade_ref must be in .gitignore" >&2; return 1; }
     # Functional: set/read/clear the track in an isolated copy of the tree.
+    # Hermetic: own data home, no GitHub update check, and no real .env (point
+    # CHAT_ENV at a nonexistent file so it falls back to localhost defaults).
     local d; d=$(mktemp -d); cp -a "$PROJECT_DIR/." "$d/repo" 2>/dev/null
     local set_out chk_out off_out
-    set_out=$("$d/repo/chati" --track main 2>&1)
-    chk_out=$("$d/repo/chati" --check-update 2>&1)
-    off_out=$("$d/repo/chati" --track off 2>&1)
+    local _iso=(env "CHATI_DATA_HOME=$d/data" "CHAT_ENV=$d/noenv" "CHATI_NO_UPDATE_CHECK=1")
+    set_out=$("${_iso[@]}" "$d/repo/chati" --track main 2>&1)
+    chk_out=$("${_iso[@]}" "$d/repo/chati" --check-update 2>&1)
+    off_out=$("${_iso[@]}" "$d/repo/chati" --track off 2>&1)
     rm -rf "$d"
     printf '%s' "$set_out" | grep -q "tracks git ref 'main'" \
         || { echo "--track main should set the ref" >&2; return 1; }
