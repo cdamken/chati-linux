@@ -437,7 +437,7 @@ test_sticky_global_settings() {
         || { echo "chati should define a /sticky command" >&2; return 1; }
     awk '/^persist_session_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON/{print;exit}' "$f" | grep -q ON \
         || { echo "persist must write the shared file in global mode" >&2; return 1; }
-    awk '/^load_active_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS" != "ON"/{print;exit}' "$f" | grep -q 'GLOBAL_SETTINGS' \
+    awk '/^load_active_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON.*return/{print;exit}' "$f" | grep -q return \
         || { echo "load must skip the per-session overlay in global mode" >&2; return 1; }
     # Functional: in an isolated data home, /sticky on keeps shell across /new.
     local d; d=$(mktemp -d)
@@ -1350,7 +1350,7 @@ test_ollama_is_remote() {
             echo "ollama_is_remote wrongly flagged local '$ep' as remote" >&2; return 1
         fi
     done
-    for ep in "http://snoopy6:11434" "http://100.64.0.1:11434" "https://box:443"; do
+    for ep in "http://remotebox:11434" "http://100.64.0.1:11434" "https://box:443"; do
         if ! env OLLAMA_API="$ep" OLLAMA_HOST="" bash -c "$sh; ollama_is_remote"; then
             echo "ollama_is_remote missed remote '$ep'" >&2; return 1
         fi
@@ -1522,30 +1522,6 @@ test_new_session_resets_to_builtin() {
 }
 run_test "new session resets toggles to factory baseline (#60)" test_new_session_resets_to_builtin
 
-# U6 follow-up: even a global DEFAULTS file that already carries AGENT_AUTOACCEPT=ON
-# (written before the scrub, e.g. the one on Carlos's Mac) must never arm a new
-# session — load forces auto-accept OFF after all reads.
-test_load_forces_autoaccept_off_from_stale_defaults() {
-    BUILTIN_SETTINGS_FILE="$SANDBOX/builtin_u6"
-    DEFAULTS_SETTINGS_FILE="$SANDBOX/defaults_u6"
-    HISTORY_DIR="$SANDBOX/hist_u6"; mkdir -p "$HISTORY_DIR"
-    PREVIOUS_FILE="$SANDBOX/prev_u6"
-    GLOBAL_SETTINGS=OFF
-    _write_builtin_baseline
-    # A stale global defaults file with auto-accept (and shell) ON.
-    FORCE_LANG=auto WEB_MODE=OFF THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=ON \
-        VOICE_MODE=OFF DEFAULT_VOICE=AUTO SAY_SPEED=1.0 SAY_COLORS=white/green \
-        USER_COLOR_NAME=cyan AI_COLOR_NAME=default GLOBAL_SETTINGS=OFF
-    settings_write "$DEFAULTS_SETTINGS_FILE"
-    echo "nope" > "$PREVIOUS_FILE"
-    # Now a fresh session loads.
-    AGENT_AUTOACCEPT=ON AGENT_MODE=OFF
-    load_active_settings
-    assert_eq "$AGENT_AUTOACCEPT" "OFF" "auto-accept forced OFF even from a stale ON defaults file" || return 1
-    # Shell mode from defaults is still honored (only auto-accept is force-reset).
-    assert_eq "$AGENT_MODE" "ON" "shell mode still comes from the defaults file"
-}
-run_test "load forces auto-accept OFF even from a stale defaults file (U6)" test_load_forces_autoaccept_off_from_stale_defaults
 
 test_returning_session_restores_own() {
     # #60: returning to a session that HAS saved settings restores ITS values

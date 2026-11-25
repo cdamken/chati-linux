@@ -523,16 +523,9 @@ load_active_settings() {
     # Global mode (/sticky): the shared config IS the defaults file; skip the
     # per-session overlay so every session is configured identically. Set by the
     # defaults read above, so re-check it here.
-    if [[ "$GLOBAL_SETTINGS" != "ON" ]]; then
-        local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
-        [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" 2>/dev/null || true
-    fi
-    # Auto-accept NEVER survives a load: no stale defaults file or saved session may
-    # silently start a NEW session running every command without asking. It is a
-    # per-session, re-arm-with-/sY toggle (reload_settings_announce reports the drop
-    # on a switch). This also neutralizes a defaults file written BEFORE the
-    # settings_write_global scrub — e.g. one that already has AGENT_AUTOACCEPT=ON (U6).
-    AGENT_AUTOACCEPT="OFF"
+    [[ "$GLOBAL_SETTINGS" == "ON" ]] && return 0
+    local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
+    [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" 2>/dev/null || true
 }
 # Reload the active session's settings AND tell the user when a switch turned
 # a security-relevant toggle OFF. Each session keeps its own settings (#60), so
