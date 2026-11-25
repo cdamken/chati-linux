@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.40.17"
+CHATI_VERSION="1.40.18"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -527,24 +527,26 @@ load_active_settings() {
     local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
     [[ -n "$s" ]] && settings_read "$HISTORY_DIR/${s}_settings" 2>/dev/null || true
 }
-# Reload the active session's settings AND tell the user when a switch turned
-# a security-relevant toggle OFF. Each session keeps its own settings (#60), so
-# /new and /switch reset Shell/auto-accept to this session's baseline — a good
-# safety default, but a SILENT one bit users who armed /sY and then /new'd and
-# assumed shell was still on. Announce the drop so the state is never a surprise.
+# Reload the active session's settings, but keep Shell mode and auto-accept as
+# they are right now. Once you arm them they stay armed across /new, /switch and
+# /back until YOU turn them off (/s, /sY); they used to reset to each session's
+# own baseline, which meant re-arming on every new conversation (Carlos: "if I
+# turn it on, I want it to stay on"). Every other toggle still travels with its
+# session (#37). The state is announced, never silent, so an armed auto-accept is
+# always visible after a switch. They are still never written into the global
+# defaults (settings_write_global scrubs auto-accept; see U6).
 reload_settings_announce() {
     local was_agent="$AGENT_MODE" was_auto="$AGENT_AUTOACCEPT"
     load_active_settings
-    if [[ "$was_agent" == "ON" && "$AGENT_MODE" != "ON" ]]; then
+    AGENT_MODE="$was_agent"; AGENT_AUTOACCEPT="$was_auto"
+    persist_session_settings 2>/dev/null
+    if [[ "$AGENT_MODE" == "ON" && "$AGENT_AUTOACCEPT" == "ON" ]]; then
         echo ""
-        echo "🐚 ⚠️  Shell mode is OFF in this session."
-        echo "       You armed it in the session you just left; each session keeps its own"
-        echo "       shell/auto-accept, so this one starts safe. /s to enable it here, or"
-        echo "       /back to return to the session where it was on."
-    elif [[ "$was_auto" == "ON" && "$AGENT_AUTOACCEPT" != "ON" ]]; then
+        echo "🔴 ⚠️  AUTO-ACCEPT is still ON in this session: commands run WITHOUT asking."
+        echo "       /sY (or /s) to turn it off."
+    elif [[ "$AGENT_MODE" == "ON" ]]; then
         echo ""
-        echo "🛡️  Auto-accept is OFF in this session (switching sessions resets it)."
-        echo "       /sY to re-arm it here, or /back to return to the previous session."
+        echo "🐚 Shell mode is still ON in this session (every command asks). /s to turn it off."
     fi
 }
 # Clean-exit handler: flush command history AND the current session's settings.
