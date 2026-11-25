@@ -1341,6 +1341,7 @@ eval "$(awk '/^CHATI_SETTINGS_KEYS=/,/\)/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^ansi_color\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^update_say_rate\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_write\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+eval "$(awk '/^settings_write_global\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_read\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^load_active_settings\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^reload_settings_announce\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
@@ -1368,6 +1369,30 @@ test_session_settings_roundtrip() {
         && assert_eq "$AI_COLOR_NAME" "green" "ai color restored"
 }
 run_test "per-session settings round-trip (write then read)" test_session_settings_roundtrip
+
+# U6: the GLOBAL defaults file (inherited by every new session) must never carry
+# auto-accept ON — otherwise sticky/`/defaults save` would silently arm "run every
+# command without asking" in fresh sessions. Shell mode may persist; auto-accept
+# must be forced OFF on the way out.
+test_global_defaults_never_persist_autoaccept() {
+    local f="$SANDBOX/defaults_settings"
+    FORCE_LANG=auto WEB_MODE=OFF THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=ON \
+        VOICE_MODE=OFF DEFAULT_VOICE=AUTO SAY_SPEED=1.0 SAY_COLORS=white/green \
+        USER_COLOR_NAME=cyan AI_COLOR_NAME=default
+    settings_write_global "$f"
+    # The live toggle is untouched for THIS session...
+    assert_eq "$AGENT_AUTOACCEPT" "ON" "live auto-accept not disturbed by the write" || return 1
+    # ...but the inherited file has it OFF, while shell mode is preserved.
+    grep -q '^AGENT_AUTOACCEPT=OFF$' "$f" \
+        || { echo "global defaults must persist AGENT_AUTOACCEPT=OFF" >&2; return 1; }
+    grep -q '^AGENT_MODE=ON$' "$f" \
+        || { echo "global defaults should still carry shell mode" >&2; return 1; }
+    # And no code path writes the defaults file with the un-scrubbed writer.
+    if grep -qE 'settings_write "\$DEFAULTS_SETTINGS_FILE"' "$PROJECT_DIR/chati"; then
+        echo "DEFAULTS_SETTINGS_FILE must be written via settings_write_global only" >&2; return 1
+    fi
+}
+run_test "global defaults never persist auto-accept ON (U6)" test_global_defaults_never_persist_autoaccept
 
 test_settings_is_a_companion() {
     case " ${SESSION_COMPANION_SUFFIXES[*]} " in

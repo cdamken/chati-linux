@@ -454,6 +454,18 @@ settings_write() {
     : > "$f" 2>/dev/null || return 0
     for k in "${CHATI_SETTINGS_KEYS[@]}"; do printf '%s=%s\n' "$k" "${!k}" >> "$f"; done
 }
+# Write the GLOBAL defaults file, which EVERY new session inherits at startup.
+# Auto-accept (/sY — run every command WITHOUT asking) must never ride along into
+# a fresh session: that would silently defeat the per-session safety reset (#60),
+# so it is always persisted OFF here and stays a per-session, re-arm-each-time
+# toggle. Shell mode itself is fine to share (each command still prompts). (U6)
+settings_write_global() {
+    local f="$1"; [[ -z "$f" ]] && return 0
+    local _save_auto="$AGENT_AUTOACCEPT"
+    AGENT_AUTOACCEPT="OFF"
+    settings_write "$f"
+    AGENT_AUTOACCEPT="$_save_auto"
+}
 # Read a settings file into the runtime toggles (known keys only), then refresh
 # the derived state (colors, speech rate). Returns 1 if the file is absent.
 settings_read() {
@@ -474,7 +486,7 @@ persist_session_settings() {
     # Global mode (/sticky): one shared config. Write every change to the global
     # defaults file so ALL sessions see it — no per-session divergence.
     if [[ "$GLOBAL_SETTINGS" == "ON" ]]; then
-        settings_write "$DEFAULTS_SETTINGS_FILE"; return 0
+        settings_write_global "$DEFAULTS_SETTINGS_FILE"; return 0
     fi
     local s; s=$(cat "$PREVIOUS_FILE" 2>/dev/null)
     [[ -n "$s" ]] && settings_write "$HISTORY_DIR/${s}_settings"
@@ -1821,8 +1833,9 @@ while true; do
             /defaults)
                 # The editable global defaults a NEW session inherits (#37).
                 if [[ "$cmd_args" == save ]]; then
-                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    settings_write_global "$DEFAULTS_SETTINGS_FILE"
                     echo "💾 Saved current settings as the default for NEW sessions."
+                    [[ "$AGENT_AUTOACCEPT" == "ON" ]] && echo "   (Auto-accept stays per-session for safety; re-arm it with /sY where you want it.)"
                 elif [[ "$cmd_args" == clear || "$cmd_args" == reset ]]; then
                     rm -f "$DEFAULTS_SETTINGS_FILE"
                     echo "🧹 Cleared the global defaults (new sessions start from built-in defaults)."
@@ -1842,13 +1855,13 @@ while true; do
                 # nested case block, so the main dispatcher stays a single switch.)
                 if [[ "$cmd_args" == on || "$cmd_args" == ON ]]; then
                     GLOBAL_SETTINGS="ON"
-                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    settings_write_global "$DEFAULTS_SETTINGS_FILE"
                     echo "🔗 Sticky config ON — settings are now shared across ALL sessions."
                     echo "   Change anything once and every session (new or old) uses it."
-                    echo "   Note: this includes Shell/auto-accept, so /sY would persist everywhere. /sticky off to go back to per-session."
+                    echo "   Note: Shell mode is shared too, but auto-accept (/sY) stays per-session for safety — re-arm it where you want it."
                 elif [[ "$cmd_args" == off || "$cmd_args" == OFF ]]; then
                     GLOBAL_SETTINGS="OFF"
-                    settings_write "$DEFAULTS_SETTINGS_FILE"
+                    settings_write_global "$DEFAULTS_SETTINGS_FILE"
                     persist_session_settings
                     echo "🔓 Sticky config OFF — each session keeps its own settings again."
                 else
