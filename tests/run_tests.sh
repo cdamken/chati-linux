@@ -310,6 +310,20 @@ test_bootstrap_install_sh() {
 }
 run_test "install.sh bootstrap: download, install, run as root (documented)" test_bootstrap_install_sh
 
+# D6: the OpenWebUI backup must copy data-dir CONTENTS with the portable "/." idiom.
+# `cp -R src/ dest/` copies contents on BSD but nests into dest/<basename> on GNU,
+# which buries uploads/vector_db and loses them on restore.
+test_webui_backup_copies_contents_portably() {
+    local f="$PROJECT_DIR/installer/install_webui.sh"
+    [[ -f "$f" ]] || return 0   # installer is optional in some checkouts
+    grep -q 'cp -R "\$OPENWEBUI_DATA_DIR/\." "\$staging/data/"' "$f" \
+        || { echo "backup must use cp -R \"\$OPENWEBUI_DATA_DIR/.\" (portable contents copy)" >&2; return 1; }
+    if grep -q 'cp -R "\$OPENWEBUI_DATA_DIR/" "\$staging/data/"' "$f"; then
+        echo "backup still uses the trailing-slash form that nests on GNU (D6)" >&2; return 1
+    fi
+}
+run_test "OpenWebUI backup copies data contents portably (D6)" test_webui_backup_copies_contents_portably
+
 # uv is only for the OpenWebUI/SearXNG venvs, so a --minimal box must not pull it.
 test_uv_gated_on_minimal() {
     cd "$PROJECT_DIR" || return 1
