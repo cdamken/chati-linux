@@ -286,12 +286,27 @@ test_bootstrap_install_sh() {
         && grep -q 'git clone' "$PROJECT_DIR/install.sh" \
         && grep -qE 'exec \./setup\.sh --system' "$PROJECT_DIR/install.sh" \
         || { echo "install.sh must be root-gated, clone, and exec setup.sh --system" >&2; return 1; }
-    # Safe server defaults: CLI-only, no model pull, unless overridden.
-    grep -q 'CHATI_SETUP_ARGS:---minimal --no-pull' "$PROJECT_DIR/install.sh" \
-        || { echo "install.sh default args should be --minimal --no-pull" >&2; return 1; }
+    # Safe server defaults: CLI-only, no model pull, unless overridden. Uses the
+    # '---' (unset) default, NOT ':-' (unset-or-empty), so --full / an exported
+    # empty CHATI_SETUP_ARGS can legitimately request the full stack (U3).
+    grep -q 'CHATI_SETUP_ARGS---minimal --no-pull' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh default args should be --minimal --no-pull via the unset default" >&2; return 1; }
     # README documents the one-liner so it is discoverable from GitHub.
     grep -q 'install.sh | sudo bash' "$PROJECT_DIR/README.md" \
         || { echo "README should document the curl|sudo bash one-liner" >&2; return 1; }
+    # U3: options must be reachable through `curl | sudo bash` — env vars attach to
+    # curl and sudo scrubs them, so install.sh must parse flags (bash -s -- --full).
+    grep -q -- '--full)' "$PROJECT_DIR/install.sh" \
+        && grep -qE '\-\-prefix\)' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh must parse --full/--prefix flags (env vars don't survive curl|sudo bash)" >&2; return 1; }
+    grep -q 'bash -s -- --full' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh should document the 'bash -s -- --full' full-stack invocation" >&2; return 1; }
+    # U4: never blindly `rm -rf "$PREFIX"` — a stray --prefix /opt would wipe it.
+    if grep -qE 'rm -rf "\$PREFIX"' "$PROJECT_DIR/install.sh"; then
+        echo "install.sh must not rm -rf \$PREFIX blindly (U4)" >&2; return 1
+    fi
+    grep -q 'refusing to delete' "$PROJECT_DIR/install.sh" \
+        || { echo "install.sh must refuse to delete a non-chati prefix (U4)" >&2; return 1; }
 }
 run_test "install.sh bootstrap: download, install, run as root (documented)" test_bootstrap_install_sh
 
@@ -448,6 +463,35 @@ test_upgrade_can_track_git_ref() {
         || { echo "--track off should clear the ref" >&2; return 1; }
 }
 run_test "chati --upgrade can track a git ref (--track) for testing" test_upgrade_can_track_git_ref
+
+# U1: release-mode upgrade installs the release TAG, not origin/main's tip —
+# otherwise commits pushed after the tag run (as root, on a system install).
+test_upgrade_release_pins_tag() {
+    cd "$PROJECT_DIR" || return 1
+    local f="$PROJECT_DIR/chati" body
+    body=$(awk '/^chati_self_update\(\) \{/,/^}$/' "$f")
+    # Release branch (the else of the track_ref test) must fetch tags and check
+    # out v$latest, and must NOT `git pull` the branch tip.
+    printf '%s' "$body" | grep -q 'fetch --quiet --tags origin' \
+        || { echo "release upgrade must fetch tags" >&2; return 1; }
+    printf '%s' "$body" | grep -q 'checkout --quiet --detach "v$latest"' \
+        || { echo "release upgrade must check out the release tag v\$latest" >&2; return 1; }
+    if printf '%s' "$body" | grep -qE 'pull --ff-only'; then
+        echo "release upgrade must not pull the branch tip (runs unreleased code as root)" >&2
+        return 1
+    fi
+}
+run_test "release-mode upgrade pins the release tag, not main's tip (U1)" test_upgrade_release_pins_tag
+
+# M2: the fallback / stale-selection model picker must skip embedding-only models
+# (bge-*/*-embed), which can't chat, instead of blindly taking head -1.
+test_ensure_valid_model_skips_embeddings() {
+    cd "$PROJECT_DIR" || return 1
+    local body; body=$(awk '/^ensure_valid_model\(\) \{/,/^}$/' "$PROJECT_DIR/chati")
+    printf '%s' "$body" | grep -q "grep -viE 'embed|\^bge-'" \
+        || { echo "ensure_valid_model must skip embedding models when re-picking (M2)" >&2; return 1; }
+}
+run_test "ensure_valid_model skips embedding-only models (M2)" test_ensure_valid_model_skips_embeddings
 
 # chati --upgrade on a system install (root-owned prefix) re-runs itself with
 # sudo so a normal user can upgrade, then re-applies with --system.
