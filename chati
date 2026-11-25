@@ -150,6 +150,19 @@ chati_self_update() {
             echo "chati: git fetch failed. Try:  git -C \"$CHATI_DIR\" fetch --tags origin" >&2
             return 1
         fi
+        # Don't strand a checkout that is AHEAD of the release tag. A dev checkout
+        # with local commits past the tag (e.g. the one feeding $PATH) has a clean
+        # working tree, so the porcelain guard misses it; detaching to the tag would
+        # drop those commits from the running code with no warning, and a later
+        # commit would land off-branch. Proceed only when HEAD is an ancestor of the
+        # tag (cleanly behind it); otherwise refuse, like the tracking guard (U1).
+        if ! git -C "$CHATI_DIR" merge-base --is-ancestor HEAD "v$latest" 2>/dev/null; then
+            echo "chati: $CHATI_DIR has local commits ahead of release v$latest;" >&2
+            echo "   installing the tag would drop them from the running code. Review:" >&2
+            echo "   git -C \"$CHATI_DIR\" log --oneline v$latest..HEAD" >&2
+            echo "   Push or branch them, or use --track to follow a branch instead." >&2
+            return 1
+        fi
         if ! git -C "$CHATI_DIR" checkout --quiet --detach "v$latest" 2>/dev/null; then
             echo "chati: couldn't check out release v$latest." >&2
             echo "   Do it by hand:  git -C \"$CHATI_DIR\" fetch --tags origin && git -C \"$CHATI_DIR\" checkout v$latest" >&2

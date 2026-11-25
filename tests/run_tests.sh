@@ -484,6 +484,10 @@ test_upgrade_release_pins_tag() {
         echo "release upgrade must not pull the branch tip (runs unreleased code as root)" >&2
         return 1
     fi
+    # U1 hole: a dev checkout AHEAD of the tag must not be silently detached onto
+    # it; proceed only when HEAD is an ancestor of the release tag.
+    printf '%s' "$body" | grep -q 'merge-base --is-ancestor HEAD "v$latest"' \
+        || { echo "release upgrade must refuse a checkout ahead of the tag (U1)" >&2; return 1; }
 }
 run_test "release-mode upgrade pins the release tag, not main's tip (U1)" test_upgrade_release_pins_tag
 
