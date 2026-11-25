@@ -49,7 +49,22 @@ while [[ $# -gt 0 ]]; do
         --setup-args)  SETUP_ARGS="${2:?--setup-args needs a value}"; SETUP_ARGS_SET="yes"; shift ;;
         --setup-args=*) SETUP_ARGS="${1#*=}"; SETUP_ARGS_SET="yes" ;;
         -h|--help)
-            sed -n '2,25p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
+            # Can't read "$0" here: under `curl | sudo bash` it is "bash", not this
+            # script. Embed the usage so --help works through the pipe too.
+            cat <<'USAGE'
+chati installer — run as root:
+    curl -fsSL https://raw.githubusercontent.com/cdamken/chati-linux/main/install.sh | sudo bash
+
+Options go AFTER `bash -s --`:
+    --full              install the full stack (OpenWebUI/SearXNG), pull models
+    --branch NAME       branch to install                 (default: main)
+    --prefix PATH       where the repo lives, readable     (default: /opt/chati-linux)
+    --repo-url URL      clone URL                          (default: public GitHub repo)
+    --setup-args "..."  raw args for setup.sh --system     (overrides --full)
+
+Full stack:
+    curl -fsSL <url> | sudo bash -s -- --full
+USAGE
             exit 0 ;;
         *) die "unknown option: $1  (see --help)" ;;
     esac
