@@ -588,11 +588,29 @@ elif [[ "$SYSTEM_LINK" -eq 1 ]]; then
     # so relocate the checkout into a shared prefix (default /opt/chati-linux)
     # unless we are already running from one. This makes `--system` self-
     # contained: no manual cp/chown afterwards.
-    SYSTEM_PREFIX="${CHATI_SYSTEM_PREFIX:-/opt/chati-linux}"
+    # Pick the shared prefix. An explicit CHATI_SYSTEM_PREFIX always wins. Otherwise,
+    # if we are ALREADY running from a shared (non-home) location — e.g. a
+    # `chati --upgrade` that re-exec'd setup via sudo, which SCRUBS
+    # CHATI_SYSTEM_PREFIX — stay there instead of forking a second copy into
+    # /opt/chati-linux. Only a fresh install from a user home relocates to /opt (U5).
+    SYSTEM_PREFIX="${CHATI_SYSTEM_PREFIX:-}"
+    if [[ -z "$SYSTEM_PREFIX" ]]; then
+        case "$REPO_ROOT" in
+            "$HOME"/*|/home/*|/Users/*|/root/*) SYSTEM_PREFIX="/opt/chati-linux" ;;
+            *)                                  SYSTEM_PREFIX="$REPO_ROOT" ;;
+        esac
+    fi
     if [[ "$REPO_ROOT" != "$SYSTEM_PREFIX" ]]; then
         step "Placing the repo in $SYSTEM_PREFIX (shared, readable by all users)"
         sudo mkdir -p "$SYSTEM_PREFIX"
         sudo cp -a "$REPO_ROOT/." "$SYSTEM_PREFIX/"   # copy contents (incl. .git); refreshes an existing prefix
+        # NEVER expose the installing user's per-machine secrets or private state in
+        # the SHARED prefix (world-readable /opt): .env holds credentials, and any
+        # conversation history / per-instance state is personal. Strip them from the
+        # copy — each user keeps their own under CHATI_DATA_HOME, and a shared .env
+        # is for the admin to place deliberately (U5). .git stays (upgrades need it).
+        sudo rm -rf "$SYSTEM_PREFIX/.env" "$SYSTEM_PREFIX/conversation_histories" \
+                    "$SYSTEM_PREFIX/instances" "$SYSTEM_PREFIX/finetune" 2>/dev/null || true
         REPO_ROOT="$SYSTEM_PREFIX"
         ok "Repo available at $SYSTEM_PREFIX"
     fi

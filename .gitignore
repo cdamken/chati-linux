@@ -66,3 +66,4 @@ docr/ocrvision
 
 # chati --track: which git ref --upgrade follows (per-install, never committed)
 .upgrade_ref
+.setup_incomplete

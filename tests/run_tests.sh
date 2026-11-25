@@ -266,9 +266,16 @@ test_setup_system_flag() {
         || { echo "setup.sh --system must link into /usr/local/bin via sudo (link_run)" >&2; return 1; }
     # --system is self-contained: it relocates the checkout into a shared prefix
     # (default /opt/chati-linux) so there is no manual cp/chown afterwards.
-    grep -q 'CHATI_SYSTEM_PREFIX:-/opt/chati-linux' "$PROJECT_DIR/setup.sh" \
+    grep -q 'SYSTEM_PREFIX="/opt/chati-linux"' "$PROJECT_DIR/setup.sh" \
         && grep -qE 'sudo cp -a "\$REPO_ROOT/\." "\$SYSTEM_PREFIX/"' "$PROJECT_DIR/setup.sh" \
-        || { echo "setup.sh --system must relocate the repo into a shared prefix" >&2; return 1; }
+        || { echo "setup.sh --system must relocate a home checkout into a shared prefix" >&2; return 1; }
+    # U5b: a scrubbed CHATI_SYSTEM_PREFIX (sudo on --upgrade) must not fork a second
+    # copy — if already running from a non-home prefix, stay there.
+    grep -qE 'SYSTEM_PREFIX="\$REPO_ROOT"' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh must keep REPO_ROOT as the prefix when already system-placed (U5b)" >&2; return 1; }
+    # U5c: never copy per-machine secrets / private state into the SHARED prefix.
+    grep -qE 'rm -rf "\$SYSTEM_PREFIX/\.env"' "$PROJECT_DIR/setup.sh" \
+        || { echo "setup.sh must strip .env from the shared prefix copy (U5c)" >&2; return 1; }
     local out; out=$(./setup.sh --help 2>&1) || return 1
     assert_match "$out" "system" "setup --system in help" \
         && assert_match "$out" "ALL users" "setup --system explains all-users scope" || return 1
@@ -430,7 +437,7 @@ test_sticky_global_settings() {
         || { echo "chati should define a /sticky command" >&2; return 1; }
     awk '/^persist_session_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON/{print;exit}' "$f" | grep -q ON \
         || { echo "persist must write the shared file in global mode" >&2; return 1; }
-    awk '/^load_active_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS.*ON.*return/{print;exit}' "$f" | grep -q return \
+    awk '/^load_active_settings\(\)/{f=1} f&&/GLOBAL_SETTINGS" != "ON"/{print;exit}' "$f" | grep -q 'GLOBAL_SETTINGS' \
         || { echo "load must skip the per-session overlay in global mode" >&2; return 1; }
     # Functional: in an isolated data home, /sticky on keeps shell across /new.
     local d; d=$(mktemp -d)
@@ -505,6 +512,21 @@ test_upgrade_release_pins_tag() {
         || { echo "release upgrade must refuse a checkout ahead of the tag (U1)" >&2; return 1; }
 }
 run_test "release-mode upgrade pins the release tag, not main's tip (U1)" test_upgrade_release_pins_tag
+
+# U5a: a failed setup after a pull must be retried on the next upgrade — leave a
+# .setup_incomplete marker on failure, clear it on success.
+eval "$(awk '/^chati_apply_setup\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
+test_apply_setup_marks_incomplete() {
+    local d; d=$(mktemp -d)
+    printf '#!/bin/bash\nexit 1\n' > "$d/setup.sh"; chmod +x "$d/setup.sh"
+    CHATI_DIR="$d" chati_apply_setup "9.9.9" >/dev/null 2>&1
+    [[ -f "$d/.setup_incomplete" ]] || { echo "a failed setup must leave the .setup_incomplete marker" >&2; rm -rf "$d"; return 1; }
+    printf '#!/bin/bash\nexit 0\n' > "$d/setup.sh"
+    CHATI_DIR="$d" chati_apply_setup "9.9.9" >/dev/null 2>&1
+    [[ ! -f "$d/.setup_incomplete" ]] || { echo "a successful setup must clear the marker" >&2; rm -rf "$d"; return 1; }
+    rm -rf "$d"
+}
+run_test "failed setup is marked for retry, cleared on success (U5a)" test_apply_setup_marks_incomplete
 
 # M2: the fallback / stale-selection model picker must skip embedding-only models
 # (bge-*/*-embed), which can't chat, instead of blindly taking head -1.
@@ -1494,6 +1516,31 @@ test_new_session_resets_to_builtin() {
         && assert_eq "$FORCE_LANG" "auto" "lang reset"
 }
 run_test "new session resets toggles to factory baseline (#60)" test_new_session_resets_to_builtin
+
+# U6 follow-up: even a global DEFAULTS file that already carries AGENT_AUTOACCEPT=ON
+# (written before the scrub, e.g. the one on Carlos's Mac) must never arm a new
+# session — load forces auto-accept OFF after all reads.
+test_load_forces_autoaccept_off_from_stale_defaults() {
+    BUILTIN_SETTINGS_FILE="$SANDBOX/builtin_u6"
+    DEFAULTS_SETTINGS_FILE="$SANDBOX/defaults_u6"
+    HISTORY_DIR="$SANDBOX/hist_u6"; mkdir -p "$HISTORY_DIR"
+    PREVIOUS_FILE="$SANDBOX/prev_u6"
+    GLOBAL_SETTINGS=OFF
+    _write_builtin_baseline
+    # A stale global defaults file with auto-accept (and shell) ON.
+    FORCE_LANG=auto WEB_MODE=OFF THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=ON \
+        VOICE_MODE=OFF DEFAULT_VOICE=AUTO SAY_SPEED=1.0 SAY_COLORS=white/green \
+        USER_COLOR_NAME=cyan AI_COLOR_NAME=default GLOBAL_SETTINGS=OFF
+    settings_write "$DEFAULTS_SETTINGS_FILE"
+    echo "nope" > "$PREVIOUS_FILE"
+    # Now a fresh session loads.
+    AGENT_AUTOACCEPT=ON AGENT_MODE=OFF
+    load_active_settings
+    assert_eq "$AGENT_AUTOACCEPT" "OFF" "auto-accept forced OFF even from a stale ON defaults file" || return 1
+    # Shell mode from defaults is still honored (only auto-accept is force-reset).
+    assert_eq "$AGENT_MODE" "ON" "shell mode still comes from the defaults file"
+}
+run_test "load forces auto-accept OFF even from a stale defaults file (U6)" test_load_forces_autoaccept_off_from_stale_defaults
 
 test_returning_session_restores_own() {
     # #60: returning to a session that HAS saved settings restores ITS values
