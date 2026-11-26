@@ -152,7 +152,7 @@ cd ~/chati
 ./setup.sh
 ```
 
-That single command does **everything**, checking each step and printing a clear message on any problem: installs Homebrew (if missing), all packages from [`installer/Brewfile`](installer/Brewfile), starts Ollama, pulls a default chat model, sets file permissions, links `chati` onto your PATH, installs + starts the **OpenWebUI** browser app at `http://127.0.0.1:8888`, and installs + starts a local **SearXNG** for `/web` (wiring it into `.env`). Re-running it is safe (idempotent).
+That single command does **everything**, checking each step and printing a clear message on any problem: installs all apt packages, starts Ollama, pulls a default chat model, sets file permissions, links `chati` onto your PATH, installs + starts the **OpenWebUI** browser app at `http://127.0.0.1:8888`, and installs + starts a local **SearXNG** for `/web` (wiring it into `.env`). Re-running it is safe (idempotent).
 
 Options (add any of these to the command above):
 

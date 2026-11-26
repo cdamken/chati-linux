@@ -217,17 +217,15 @@ test_install_webui_guards() {
 run_test "install_webui.sh keeps backup + uv-owned Python + safe restore" test_install_webui_guards
 
 test_setup_searxng_case_not_shadowed() {
-    # Regression (#88): --searxng appeared twice in the arg case; the first match
-    # (WANT_SEARXNG=1) shadowed the second, so `--client H --searxng URL` never
-    # set CLIENT_SEARXNG. The merged case must be unique AND capture the URL.
+    # Regression (#88): --searxng once appeared twice in the arg case and the
+    # first arm shadowed the second. The case must stay unique and enable searxng.
     local n; n=$(grep -cE '^[[:space:]]*--searxng\)' "$PROJECT_DIR/setup.sh")
     [[ "$n" -eq 1 ]] || { echo "expected exactly one --searxng) case, found $n" >&2; return 1; }
-    # The single case both enables searxng and captures the optional client URL.
     awk '/^[[:space:]]*--searxng\)/{f=1} f{print} /;;[[:space:]]*$/{if(f)exit}' \
-        "$PROJECT_DIR/setup.sh" | grep -q 'CLIENT_SEARXNG=' \
-        || { echo "--searxng case must capture CLIENT_SEARXNG" >&2; return 1; }
+        "$PROJECT_DIR/setup.sh" | grep -q 'WANT_SEARXNG=1' \
+        || { echo "--searxng case must enable WANT_SEARXNG" >&2; return 1; }
 }
-run_test "setup.sh --searxng case is unique and captures the URL" test_setup_searxng_case_not_shadowed
+run_test "setup.sh --searxng case is unique and enables searxng" test_setup_searxng_case_not_shadowed
 
 test_update_applies_setup() {
     # chati --update must APPLY what it pulls (run setup --update), not just pull.
@@ -2565,10 +2563,10 @@ run_test "bash-only: no foreign scripting runtime outside the allowlist" test_ba
 
 test_no_dead_groovy() {
     # GraphPdfOcr.groovy was a never-invoked reference implementation; it and the
-    # groovy brew dependency are gone. Guard against either coming back.
+    # groovy dependency are gone. Guard against either coming back.
     assert_file_absent "$PROJECT_DIR/docr/GraphPdfOcr.groovy" \
-        && { ! grep -qiE '^[^#]*brew .*groovy|^brew "groovy"' "$PROJECT_DIR/setup.sh" "$PROJECT_DIR/installer/Brewfile" 2>/dev/null \
-             || { echo "groovy brew dependency is back" >&2; return 1; }; }
+        && { ! grep -qiE 'install .*groovy|apt.*groovy' "$PROJECT_DIR/setup.sh" 2>/dev/null \
+             || { echo "groovy dependency is back" >&2; return 1; }; }
 }
 run_test "bash-only: dead Groovy stays removed" test_no_dead_groovy
 

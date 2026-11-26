@@ -2,9 +2,9 @@
 #==============================================================================
 # setup.sh — one-command, do-everything installer for chati
 #==============================================================================
-# Run this ONCE after cloning the repo. It brings a fresh Mac from
-# "just cloned" to a FULLY WORKING system — CLI chat, the OpenWebUI browser
-# app, AND local web search (SearXNG) — and is safe to re-run any time.
+# Run this ONCE after cloning the repo. It brings a fresh Ubuntu box from
+# "just cloned" to a FULLY WORKING system (CLI chat, the OpenWebUI browser
+# app, and local web search via SearXNG), and is safe to re-run any time.
 #
 # Design goals (why this file exists):
 #   * DO EVERYTHING by default — one command, no follow-up steps to remember.
@@ -22,10 +22,9 @@ set -euo pipefail
 # ---- Configuration -----------------------------------------------------------
 # The repo root is wherever THIS script lives — never assume ~/chati.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BREWFILE="$REPO_ROOT/installer/Brewfile"
 
-# Fallback chat model if memory detection fails. Normally the model is chosen
-# from the Mac's unified memory (recommend_model). Override with --model NAME.
+# Fallback chat model if hardware detection fails. Normally the model is chosen
+# from GPU VRAM, else system memory (recommend_model). Override with --model NAME.
 DEFAULT_CHAT_MODEL="gemma4:26b"
 SEARXNG_LOCAL_URL="http://127.0.0.1:8890"
 
@@ -36,10 +35,6 @@ WANT_PULL=1
 REMOVE_ALL=0
 REMOVE_WEBUI=0
 REMOVE_SEARXNG=0
-CLIENT_ONLY=0                    # 1 for --client / --client-minimal
-CLIENT_MODE=""                   # "full" (--client) or "minimal" (--client-minimal)
-CLIENT_HOST=""                   # optional remote Ollama host given after the flag
-CLIENT_SEARXNG=""                # optional remote SearXNG URL (--searxng) for /web
 ASSUME_YES=0
 UPDATE_MODE=0                    # 1 for --update: re-apply respecting the installed profile
 FORCE_WEBUI=0                    # 1 for --force-webui: reinstall the OpenWebUI venv from scratch
@@ -49,17 +44,11 @@ WANT_EXTRA_MODELS=1              # pull the big general models by default (--no-
 FORCE_MODELS=0                   # 1 for --force-models: pull the big models even on a low-RAM box
 SYSTEM_INSTALL=0                 # 1 for --system: link into /usr/local/bin for all users (Linux; uses sudo)
 
-# Detect unified memory (GB) and pick a model that fits. Apple Silicon shares
-# RAM between CPU and GPU, so the model must leave room for the OS. gemma4:26b
-# (~17 GB) is the target on any Mac that can hold it (>=32 GB); smaller Macs
-# get progressively lighter models so setup never picks something that won't run.
+# Detect system memory (GB) as a fallback when there's no NVIDIA GPU. On a GPU
+# box the model is sized to VRAM (detect_vram_gb); this is the no-GPU path.
 detect_ram_gb() {
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        echo $(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
-    else
-        # Linux: /proc/meminfo MemTotal is in kB.
-        echo $(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1048576 ))
-    fi
+    # Linux: /proc/meminfo MemTotal is in kB.
+    echo $(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1048576 ))
 }
 recommend_model() {
     local gb="$1"
@@ -119,32 +108,24 @@ die()  { printf '\n\033[31m❌ %s\033[0m\n' "$1" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
-setup.sh — one-command, do-everything installer for chati
+setup.sh — one-command, do-everything installer for chati (Ubuntu/Debian)
 
-By default it installs EVERYTHING: Homebrew deps, Ollama + a chat model,
-the OpenWebUI browser app, and a local SearXNG for /web — all started.
+By default it installs EVERYTHING: apt deps, Ollama + a chat model, the
+OpenWebUI browser app, and a local SearXNG for /web — all started.
 
-  ./setup.sh                brew deps + Ollama + model + OpenWebUI + SearXNG
+  ./setup.sh                apt deps + Ollama + model + OpenWebUI + SearXNG
   ./setup.sh --minimal      CLI only — skip OpenWebUI and SearXNG (still installs full deps)
-  ./setup.sh --system       link 'chati' into /usr/local/bin for ALL users (Linux;
-                             uses sudo). Each user still gets their own config and
+  ./setup.sh --system       link 'chati' into /usr/local/bin for ALL users (uses
+                             sudo). Each user still gets their own config and
                              history. On a shared server that already runs Ollama,
-                             combine with --minimal --no-pull. No effect on macOS.
-  ./setup.sh --client [HOST] [--searxng URL]
-                             FULL client (remote Ollama): chat + local OCR + /web
-                             via a remote SearXNG. No local server/models/WebUI.
-                             e.g. --client heather --searxng http://heather:8890
-  ./setup.sh --client-minimal [HOST]
-                             BARE client: only curl/jq/lynx/ollama-CLI. Chat only
-                             (no OCR, no /web). Smallest footprint for old machines.
-                             HOST optional for both (e.g. heather → heather:11434; set later with /host)
+                             combine with --minimal --no-pull.
   ./setup.sh --no-webui     skip OpenWebUI only
   ./setup.sh --no-searxng   skip SearXNG only
-  ./setup.sh --model NAME    force a chat model, skipping the memory-based pick
+  ./setup.sh --model NAME    force a chat model, skipping the hardware-based pick
   ./setup.sh --no-pull       do not pull a model (assume one already exists)
   ./setup.sh --no-extra-models  pull ONLY bge-m3 alongside the chat model; skip
                              the two big gemma4 models (~37 GB)
-  ./setup.sh --force-models  pull the big gemma4 models even on a low-RAM box
+  ./setup.sh --force-models  pull the big gemma4 models even on a low-VRAM box
   ./setup.sh --update        re-apply over an existing install, respecting its
                              profile (touches OpenWebUI/SearXNG only if already
                              installed; no heavy reinstalls). Run by `chati --upgrade`.
@@ -154,17 +135,19 @@ the OpenWebUI browser app, and a local SearXNG for /web — all started.
                              wedged UI). Ollama, models, chati, SearXNG untouched.
   ./setup.sh --remove-searxng uninstall ONLY the local SearXNG. Everything else kept.
 
-The chat model is chosen from unified memory: >=32 GB -> gemma4:26b (~17 GB),
-16-31 -> llama3.1:8b-instruct-q8_0 (~8.5 GB), <16 -> gemma3:4b (~3.3 GB).
-By default setup also ensures three shared models so every machine matches:
-gemma4:31b + gemma4:26b (general models, ~37 GB total) and bge-m3 (RAG
-embeddings, ~1.2 GB). The two gemma4 are auto-skipped below 24 GB RAM (a ~19 GB
-model needs headroom); bge-m3 is always pulled. Use --no-extra-models for
-bge-m3 only, or --force-models to pull them on a small box anyway.
+The chat model is sized to the hardware: on an NVIDIA GPU box, to total VRAM;
+otherwise to system memory. >=32 GB -> gemma4:26b (~17 GB), 16-31 ->
+llama3.1:8b-instruct-q8_0 (~8.5 GB), <16 -> gemma3:4b (~3.3 GB). By default setup
+also ensures three shared models so every machine matches: gemma4:31b + gemma4:26b
+(general models, ~37 GB total) and bge-m3 (RAG embeddings, ~1.2 GB). The two gemma4
+are auto-skipped below 24 GB (a ~19 GB model needs headroom); bge-m3 is always
+pulled. Use --no-extra-models for bge-m3 only, or --force-models to pull them on a
+small box anyway. To point at a remote Ollama instead of running one here, set
+OLLAMA_HOST in .env or switch with /host inside chati (no install flag needed).
   ./setup.sh --remove-all --yes   same, without the confirmation prompt
   ./setup.sh --help          show this help
 
---remove-all keeps Homebrew and its packages (shared with other tools); it
+--remove-all keeps the apt packages (shared with the rest of the system); it
 removes OpenWebUI, SearXNG, the `chati` PATH link, logs, pulled Ollama
 models, and this repo's local state (.env, sessions, active-model file).
 USAGE
@@ -178,20 +161,14 @@ while [[ $# -gt 0 ]]; do
         --no-webui)  WANT_WEBUI=0 ;;
         --no-searxng) WANT_SEARXNG=0 ;;
         --webui)     WANT_WEBUI=1 ;;     # accepted for compatibility (now default)
-        --searxng)   WANT_SEARXNG=1       # compat on a server (now default); on a
-                     # client, an optional URL after it points /web at a remote SearXNG.
-                     if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_SEARXNG="$2"; shift; fi ;;
+        --searxng)   WANT_SEARXNG=1 ;;   # accepted for compatibility (now default)
         --no-pull)   WANT_PULL=0 ;;
         --no-extra-models) WANT_EXTRA_MODELS=0 ;; # skip the big gemma4 pair (still pulls bge-m3)
-        --force-models)    FORCE_MODELS=1 ;;      # pull the big models even on a low-RAM box
+        --force-models)    FORCE_MODELS=1 ;;      # pull the big models even on a low-VRAM box
         --update)    UPDATE_MODE=1 ;;   # re-apply over an existing install (used by `chati --upgrade`)
         --force-webui) FORCE_WEBUI=1 ;; # force a clean OpenWebUI venv reinstall
-        --system)    SYSTEM_INSTALL=1 ;; # link into /usr/local/bin for all users (Linux; uses sudo)
+        --system)    SYSTEM_INSTALL=1 ;; # link into /usr/local/bin for all users (uses sudo)
         --model)     CHAT_MODEL="${2:?--model needs a model name}"; MODEL_EXPLICIT=1; shift ;;
-        --client)    CLIENT_ONLY=1; CLIENT_MODE="full"
-                     if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
-        --client-minimal) CLIENT_ONLY=1; CLIENT_MODE="minimal"
-                     if [[ -n "${2:-}" && "$2" != -* ]]; then CLIENT_HOST="$2"; shift; fi ;;
         --remove-all) REMOVE_ALL=1 ;;
         --remove-webui)   REMOVE_WEBUI=1 ;;
         --remove-searxng) REMOVE_SEARXNG=1 ;;
@@ -208,8 +185,8 @@ done
 # update actually gets applied instead of the user having to remember to re-run
 # setup. A re-apply must NOT change the machine's profile: it re-applies config,
 # wiring and permissions, and touches OpenWebUI / SearXNG ONLY if they are
-# already installed — so it never turns a --minimal or --client box into a full
-# one. The initial install still honors the flags/defaults above.
+# already installed, so it never turns a --minimal box into a full one. The
+# initial install still honors the flags/defaults above.
 if [[ "$UPDATE_MODE" -eq 1 ]]; then
     [[ -d "$HOME/openwebui" ]]            && WANT_WEBUI=1   || WANT_WEBUI=0
     [[ -f "$HOME/searxng/settings.yml" ]] && WANT_SEARXNG=1 || WANT_SEARXNG=0
@@ -223,30 +200,25 @@ fi
 
 # ---- Uninstall path (--remove-all) ------------------------------------------
 # Tears down everything setup.sh creates, so an install can be tested and
-# then cleanly removed. Deliberately does NOT touch Homebrew or its packages
-# (jq, curl, ollama, …) — those are shared with the rest of your system and
-# removing them is out of scope for this project's installer.
+# then cleanly removed. Deliberately does NOT touch the apt packages (jq, curl,
+# ollama, …): those are shared with the rest of the system and removing them is
+# out of scope for this project's installer.
 remove_all() {
-    # Make brew visible so `brew --prefix` works (for the chati symlink path).
-    if [[ -x /opt/homebrew/bin/brew ]]; then eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [[ -x /usr/local/bin/brew ]]; then eval "$(/usr/local/bin/brew shellenv)"; fi
-    local brew_bin=""; command -v brew >/dev/null 2>&1 && brew_bin="$(brew --prefix)/bin"
-
     local models=""
     command -v ollama >/dev/null 2>&1 && models="$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')"
 
-    echo "🧹 --remove-all will DELETE the following (Homebrew & its packages are kept):"
+    echo "🧹 --remove-all will DELETE the following (the apt packages are kept):"
     echo "     • OpenWebUI:        ~/openwebui"
     echo "     • Local SearXNG:    ~/searxng"
     echo "     • Logs:             ~/logs"
-    echo "     • PATH link:        chati (${brew_bin:+$brew_bin and }$HOME/.local/bin; plus any old ailocal leftover)"
-    echo "     • Autostart agent:  old pre-1.36 login agents (macOS LaunchAgent / Linux systemd user unit)"
+    echo "     • PATH link:        chati (~/.local/bin and /usr/local/bin; plus any old ailocal leftover)"
+    echo "     • Autostart agent:  old pre-1.36 systemd user units, if any"
     echo "     • Repo state:       .env, .active_ollama_model.txt, .web_cache,"
     echo "                         conversation_histories/, ola_chat/instances/"
     echo "     • User data home:   ${CHATI_DATA_HOME:-$HOME/.local/share/chati}"
     echo "                         (saved sessions, active-session pointer, settings)"
     echo "     • Ollama models:    all pulled models${models:+ ($(printf '%s' "$models" | paste -sd, -))}"
-    echo "   (The repo code and Homebrew packages are NOT removed.)"
+    echo "   (The repo code and apt packages are NOT removed.)"
 
     if [[ "$ASSUME_YES" -ne 1 ]]; then
         printf '\nProceed? [y/N] '
@@ -287,40 +259,28 @@ remove_all() {
     ok "Services stopped"
 
     step "Removing the 'chati' PATH link (and any old 'ailocal' leftover)"
-    # Remove from wherever setup linked: Homebrew's bin (macOS) and/or
-    # ~/.local/bin (Linux). Checking both is harmless and covers either OS.
+    # Remove from wherever setup linked: ~/.local/bin, or /usr/local/bin for a
+    # --system install (that one needs root).
     local _lb
-    for _lb in "$brew_bin" "$HOME/.local/bin"; do
-        [[ -z "$_lb" ]] && continue
-        [[ -L "$_lb/chati" ]] && rm -f "$_lb/chati"
-        [[ -L "$_lb/ailocal" ]] && rm -f "$_lb/ailocal"
+    for _lb in "$HOME/.local/bin" /usr/local/bin; do
+        local _sudo=""; [[ "$_lb" == /usr/local/bin && ! -w "$_lb" ]] && _sudo="sudo"
+        [[ -L "$_lb/chati" ]] && $_sudo rm -f "$_lb/chati"
+        [[ -L "$_lb/ailocal" ]] && $_sudo rm -f "$_lb/ailocal"
     done
     ok "Links removed"
 
     step "Removing the login autostart agent (if any)"
-    # macOS: LaunchAgent. Linux: systemd user units (autostart + autoheal).
-    case "$OSTYPE" in
-        darwin*)
-            launchctl bootout "gui/$(id -u)/com.chati.ailocal" 2>/dev/null \
-                || launchctl unload "$HOME/Library/LaunchAgents/com.chati.ailocal.plist" 2>/dev/null || true
-            rm -f "$HOME/Library/LaunchAgents/com.chati.ailocal.plist" \
-                  "$HOME/Library/LaunchAgents/com.chati.ollama-heal.plist"
-            ;;
-        linux*)
-            systemctl --user disable --now chati-ailocal.service chati-ollama-heal.timer 2>/dev/null || true
-            rm -f "$HOME/.config/systemd/user/chati-ailocal.service" \
-                  "$HOME/.config/systemd/user/chati-ollama-heal.service" \
-                  "$HOME/.config/systemd/user/chati-ollama-heal.timer"
-            systemctl --user daemon-reload 2>/dev/null || true
-            ;;
-    esac
+    # Linux: systemd user units (autostart + autoheal), pre-1.36 leftovers.
+    systemctl --user disable --now chati-ailocal.service chati-ollama-heal.timer 2>/dev/null || true
+    rm -f "$HOME/.config/systemd/user/chati-ailocal.service" \
+          "$HOME/.config/systemd/user/chati-ollama-heal.service" \
+          "$HOME/.config/systemd/user/chati-ollama-heal.timer"
+    systemctl --user daemon-reload 2>/dev/null || true
     ok "Autostart agent removed"
 
-    step "Clearing LAN exposure and keep-awake"
-    launchctl unsetenv OLLAMA_HOST 2>/dev/null || true
-    _cf=$(cat "$HOME/.config/chati/caffeinate.pid" 2>/dev/null) && [[ -n "$_cf" ]] && kill "$_cf" 2>/dev/null || true
+    step "Clearing chati config"
     rm -rf "$HOME/.config/chati"
-    ok "LAN env + caffeinate + chati config cleared"
+    ok "chati config cleared"
 
     step "Removing installed apps and state"
     rm -rf "$HOME/openwebui" "$HOME/searxng" "$HOME/logs"
@@ -331,7 +291,7 @@ remove_all() {
     rm -rf "${CHATI_DATA_HOME:-$HOME/.local/share/chati}"
     ok "Apps and local state removed"
 
-    printf '\n\033[1;32m✅ Removed. Homebrew and its packages were left intact.\033[0m\n'
+    printf '\n\033[1;32m✅ Removed. The apt packages were left intact.\033[0m\n'
     echo "Re-install anytime with: ./setup.sh"
     exit 0
 }
@@ -379,88 +339,6 @@ remove_searxng() {
     exit 0
 }
 
-# ---- CLIENT installs: use a remote Ollama, run nothing heavy locally --------
-# Two tiers, both offload inference to a remote Ollama (no local server, no
-# models pulled, no OpenWebUI, no LOCAL SearXNG service):
-#   --client          FULL client — also installs the OCR stack
-#                     (tesseract/poppler/imagemagick/ghostscript) so /ocr
-#                     and /file on images/PDFs work, and can do /web by pointing
-#                     at a remote SearXNG URL.
-#   --client-minimal  BARE client — only curl/jq/lynx + the ollama CLI. Chat
-#                     only: no OCR, no /web. Tiny footprint for old machines.
-# Helper: write a single KEY=value line into .env, replacing any existing one.
-_env_set() {
-    local key="$1" val="$2" env="$REPO_ROOT/.env" tmp; tmp="$(mktemp)"
-    if [[ -f "$env" ]]; then
-        grep -vE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$env" > "$tmp" 2>/dev/null || : > "$tmp"
-    else : > "$tmp"; fi
-    printf 'export %s="%s"\n' "$key" "$val" >> "$tmp"
-    ( umask 077; mv "$tmp" "$env" )
-}
-client_install() {
-    local host="$CLIENT_HOST" full=0
-    [[ "$CLIENT_MODE" == "full" ]] && full=1
-
-    if (( full )); then
-        step "Full client install (remote Ollama + local OCR + /web via remote SearXNG)"
-        brew install curl jq lynx ollama tesseract tesseract-lang imagemagick ghostscript poppler \
-            || die "Could not install client packages."
-        ok "Installed chat + OCR tools (no models, no local Ollama server, no OpenWebUI/SearXNG service)"
-    else
-        step "Minimal client install (remote Ollama, chat only — nothing heavy runs here)"
-        brew install curl jq lynx ollama || die "Could not install client packages."
-        ok "Installed curl, jq, lynx, ollama (CLI only — no models, no OCR, no /web)"
-    fi
-
-    mkdir -p "$HOME/logs" "$REPO_ROOT/conversation_histories"
-    chmod +x "$REPO_ROOT/chati" \
-             "$REPO_ROOT/ola_chat/ola" "$REPO_ROOT/ola_chat/mola" \
-             "$REPO_ROOT/ola_chat/ola_model" "$REPO_ROOT/docr/docr" 2>/dev/null || true
-    chmod +x "$REPO_ROOT"/libexec/chati-* 2>/dev/null || true
-    local brew_bin; brew_bin="$(brew --prefix)/bin"
-    ln -sf "$REPO_ROOT/chati"            "$brew_bin/chati"   2>/dev/null
-    ok "Linked 'chati' onto your PATH"
-
-    # Point at the remote Ollama, persisted in .env (survives restarts).
-    if [[ -n "$host" ]]; then
-        [[ "$host" != *:* ]] && host="$host:11434"     # default the port
-        _env_set OLLAMA_HOST "$host"
-        ok "Pointed at remote Ollama: $host (saved in .env)"
-        if curl -fsS --max-time 4 "http://$host/api/version" >/dev/null 2>&1; then
-            ok "Remote Ollama is reachable."
-        else
-            warn "Can't reach $host yet — chati will use it once it's up (or pick another with /host)."
-        fi
-    else
-        warn "No remote host given. Start chati and run:  /host <name-or-ip>   (e.g. /host heather)"
-    fi
-
-    # FULL: point /web at a remote SearXNG if one was given.
-    if (( full )); then
-        if [[ -n "$CLIENT_SEARXNG" ]]; then
-            _env_set SEARXNG_URLS "$CLIENT_SEARXNG"
-            ok "Web search (/web) points at: $CLIENT_SEARXNG (saved in .env)"
-        else
-            warn "No SearXNG given — /web is off until you set SEARXNG_URLS in .env (e.g. http://heather:8890)."
-            warn "Pass it with:  ./setup.sh --client HOST --searxng http://heather:8890"
-        fi
-    fi
-
-    cat <<EOF
-
-$(printf '\033[1;32m')✅ Client install complete!$(printf '\033[0m')
-────────────────────────────────────────────
-Start chatting:          chati
-Point at a server:       /host <name-or-ip>     (inside chati; saved to .env)
-List / switch servers:   /host
-This machine runs NO local Ollama server, models, or OpenWebUI — inference is on the remote.
-EOF
-    (( full )) \
-        && echo "OCR (/ocr, /file on images/PDFs) runs locally; /web uses the remote SearXNG you set." \
-        || echo "Chat only: no OCR and no /web on this machine (use --client for those)."
-    exit 0
-}
-
 if [[ "$REMOVE_ALL"     -eq 1 ]]; then remove_all;     fi
 if [[ "$REMOVE_WEBUI"   -eq 1 ]]; then remove_webui;   fi
 if [[ "$REMOVE_SEARXNG" -eq 1 ]]; then remove_searxng; fi
@@ -476,79 +354,46 @@ mkdir -p "$HOME/logs"
 # Tee stdout+stderr to the log while still showing it on the console.
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 echo "==> chati --install log — $(date)"
-echo "    repo=$REPO_ROOT client_only=$CLIENT_ONLY${CLIENT_MODE:+/$CLIENT_MODE} webui=$WANT_WEBUI searxng=$WANT_SEARXNG pull=$WANT_PULL model=$CHAT_MODEL"
+echo "    repo=$REPO_ROOT webui=$WANT_WEBUI searxng=$WANT_SEARXNG pull=$WANT_PULL model=$CHAT_MODEL"
 
 echo "🚀 chati setup — repo at: $REPO_ROOT"
 
 # ---- 1. Platform check -------------------------------------------------------
 step "Checking platform"
 case "$OSTYPE" in
-    darwin*) CHATI_PLATFORM=macos; ok "macOS detected" ;;
-    linux*)  CHATI_PLATFORM=linux; ok "Linux detected" ;;
-    *)       die "Unsupported platform: $OSTYPE (this fork targets macOS and Linux)" ;;
+    linux*)  ok "Linux detected" ;;
+    *)       die "Unsupported platform: $OSTYPE (chati-linux targets Ubuntu/Debian; macOS uses the chati repo)" ;;
 esac
+command -v apt-get >/dev/null 2>&1 \
+    || die "chati-linux expects apt-get (Ubuntu/Debian). On another distro, install by hand: curl jq lynx tesseract imagemagick ghostscript poppler-utils python3 python3-venv, then re-run with --no-pull."
 
-# ---- 2-3. Dependencies -------------------------------------------------------
-if [[ "$CHATI_PLATFORM" == macos ]]; then
-    step "Ensuring Homebrew is installed"
-    if ! command -v brew >/dev/null 2>&1; then
-        warn "Homebrew not found — installing (you may be prompted for your password)…"
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    fi
-    # Make brew usable in THIS shell whether it's Apple-silicon or Intel.
-    if [[ -x /opt/homebrew/bin/brew ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [[ -x /usr/local/bin/brew ]]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-    fi
-    command -v brew >/dev/null 2>&1 || die "Homebrew still not on PATH. Open a new terminal and re-run ./setup.sh"
-    ok "Homebrew ready ($(brew --version | head -1))"
-
-    # Thin client stops here: minimal deps + remote host, none of the heavy stack.
-    # (macOS only for now — the Linux thin-client path is a port TODO, see #1.)
-    if [[ "$CLIENT_ONLY" -eq 1 ]]; then client_install; fi
-
-    # Single source of truth = installer/Brewfile. No second package list to drift.
-    step "Installing Homebrew packages (from installer/Brewfile)"
-    [[ -f "$BREWFILE" ]] || die "Brewfile missing at $BREWFILE — is the checkout complete?"
-    brew bundle --file="$BREWFILE"
-    ok "Packages installed / up to date"
+# ---- 2-3. Dependencies (apt) -------------------------------------------------
+step "Installing packages with apt"
+# Only touch apt when something is actually missing. A re-run (every
+# `chati --upgrade` re-runs setup) must not sudo + `apt-get update` + reinstall
+# a box that already has everything: that was slow and noisy for a code-only
+# upgrade, and prompted for a password each time for nothing.
+APT_PKGS=(curl jq lynx tesseract-ocr tesseract-ocr-eng imagemagick ghostscript poppler-utils python3 python3-venv)
+apt_missing=()
+for _p in "${APT_PKGS[@]}"; do dpkg -s "$_p" >/dev/null 2>&1 || apt_missing+=("$_p"); done
+if (( ${#apt_missing[@]} == 0 )); then
+    ok "apt packages already present (nothing to install)"
 else
-    # Thin client on Linux isn't wired yet (client_install uses brew/Vision).
-    # Fail loud instead of silently running a full install. Tracked in #1.
-    if [[ "$CLIENT_ONLY" -eq 1 ]]; then
-        die "--client/--client-minimal isn't supported on Linux yet (port TODO, see #1). Run a full ./setup.sh, or point at a remote host later with /host."
-    fi
-    # Linux (Debian/Ubuntu). Same tools as the Brewfile, via apt; groovy (docr's
-    # PDF-graphics helper) is skipped here — docr falls back to tesseract.
-    step "Installing packages with apt"
-    command -v apt-get >/dev/null 2>&1 || die "This Linux path expects apt-get (Debian/Ubuntu). For another distro, install: curl jq lynx tesseract imagemagick ghostscript poppler-utils python3 python3-venv, then re-run with --no-pull."
-    # Only touch apt when something is actually missing. A re-run (every
-    # `chati --upgrade` re-runs setup) must not sudo + `apt-get update` + reinstall
-    # a box that already has everything: that was slow and noisy for a code-only
-    # upgrade, and prompted for a password each time for nothing.
-    APT_PKGS=(curl jq lynx tesseract-ocr tesseract-ocr-eng imagemagick ghostscript poppler-utils python3 python3-venv)
-    apt_missing=()
-    for _p in "${APT_PKGS[@]}"; do dpkg -s "$_p" >/dev/null 2>&1 || apt_missing+=("$_p"); done
-    if (( ${#apt_missing[@]} == 0 )); then
-        ok "apt packages already present (nothing to install)"
-    else
-        warn "Installing missing apt packages (you may be prompted for your password): ${apt_missing[*]}"
-        sudo apt-get update -y
-        sudo apt-get install -y "${apt_missing[@]}"
-        ok "apt packages installed (${apt_missing[*]})"
-    fi
-    # uv drives the OpenWebUI and SearXNG Python venvs; skip it on a --minimal /
-    # client box that installs neither (nothing else uses it). Ollama via its
-    # official Linux installer if absent.
-    if [[ "$WANT_WEBUI" -eq 1 || "$WANT_SEARXNG" -eq 1 ]] && ! command -v uv >/dev/null 2>&1; then
-        step "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; ok "uv installed"
-    fi
-    if ! command -v ollama >/dev/null 2>&1; then
-        step "Installing Ollama (official Linux installer)"
-        curl -fsSL https://ollama.com/install.sh | sh
-        ok "Ollama installed"
-    fi
+    warn "Installing missing apt packages (you may be prompted for your password): ${apt_missing[*]}"
+    sudo apt-get update -y
+    sudo apt-get install -y "${apt_missing[@]}"
+    ok "apt packages installed (${apt_missing[*]})"
+fi
+# uv drives the OpenWebUI and SearXNG Python venvs; skip it on a --minimal box
+# that installs neither (nothing else uses it). Ollama via its official Linux
+# installer if absent.
+if [[ "$WANT_WEBUI" -eq 1 || "$WANT_SEARXNG" -eq 1 ]] && ! command -v uv >/dev/null 2>&1; then
+    step "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; ok "uv installed"
+fi
+if ! command -v ollama >/dev/null 2>&1; then
+    step "Installing Ollama (official Linux installer)"
+    curl -fsSL https://ollama.com/install.sh | sh
+    ok "Ollama installed"
 fi
 
 # ---- 4. Directories ----------------------------------------------------------
@@ -568,24 +413,20 @@ chmod +x "$REPO_ROOT"/libexec/chati-* 2>/dev/null || true
 ok "Scripts are executable"
 
 # ---- 5b. Make `chati` runnable from anywhere -------------------------------
-# Symlink chati into the right bin (Homebrew's on macOS, already on PATH;
-# ~/.local/bin on Linux). chati resolves symlinks to locate its repo, so it
-# works from any directory. Everything else is a `chati <subcommand>`.
+# Symlink chati into ~/.local/bin (or /usr/local/bin with --system). chati
+# resolves symlinks to locate its repo, so it works from any directory.
+# Everything else is a `chati <subcommand>`.
 step "Linking 'chati' onto your PATH"
-# macOS links into Homebrew's bin (already on PATH); Linux uses ~/.local/bin,
-# or /usr/local/bin for all users with --system (links via sudo). chati resolves
-# the symlink to find its repo, so with --system every user needs read access to
-# $REPO_ROOT — a shared path like /opt/chati-linux is sturdier than a user home.
-# A system install (Linux + --system) links into /usr/local/bin, which needs
-# root; link_run runs the symlink step with sudo there, plainly otherwise. A
-# function (not a "$LINK_SUDO" variable) stays shellcheck-clean and safe under
-# `set -u` on bash 3.2.
+# Default: ~/.local/bin for this user. With --system, link into /usr/local/bin
+# for all users (needs root). chati resolves the symlink to find its repo, so
+# with --system every user needs read access to $REPO_ROOT; a shared path like
+# /opt/chati-linux is sturdier than a user home. link_run runs the symlink step
+# with sudo for --system, plainly otherwise. A function (not a "$LINK_SUDO"
+# variable) stays shellcheck-clean and safe under `set -u`.
 SYSTEM_LINK=0
-[[ "$SYSTEM_INSTALL" -eq 1 && "$CHATI_PLATFORM" != macos ]] && SYSTEM_LINK=1
+[[ "$SYSTEM_INSTALL" -eq 1 ]] && SYSTEM_LINK=1
 link_run() { if [[ "$SYSTEM_LINK" -eq 1 ]]; then sudo "$@"; else "$@"; fi; }
-if [[ "$CHATI_PLATFORM" == macos ]]; then
-    LINK_BIN="$(brew --prefix)/bin"
-elif [[ "$SYSTEM_LINK" -eq 1 ]]; then
+if [[ "$SYSTEM_LINK" -eq 1 ]]; then
     # All-users install: the repo must live somewhere every user can read (a
     # /usr/local/bin symlink only points back to it). A user home is often 0750,
     # so relocate the checkout into a shared prefix (default /opt/chati-linux)
@@ -640,12 +481,12 @@ fi
 # background and wait until the API answers, so nothing downstream fails with
 # "could not connect to ollama server".
 step "Starting Ollama service"
-# chati_start_ollama (from chati-common.sh) handles both platforms: the systemd
-# system service on Linux (official installer), nohup + perf flags on macOS.
+# chati_start_ollama (from chati-common.sh) drives Ollama's systemd service
+# (installed by the official Linux installer).
 if ( CHATI_DIR="$REPO_ROOT"; source "$REPO_ROOT/chati-common.sh"; chati_start_ollama ); then
     ok "Ollama is ready"
 else
-    die "Ollama didn't come up. Check ~/logs/ollama.log (macOS) or: systemctl status ollama (Linux)"
+    die "Ollama didn't come up. Check:  systemctl status ollama"
 fi
 
 # ---- 7. Ensure a chat model --------------------------------------------------
@@ -653,11 +494,11 @@ step "Ensuring a chat model is available"
 installed_models() { ollama list 2>/dev/null | tail -n +2 | awk '{print $1}'; }
 have_any_model() { [[ -n "$(installed_models)" ]]; }
 
-# Pick a model sized for the machine, unless the user forced --model. macOS
-# (unified memory) sizes by RAM; Linux with an NVIDIA GPU sizes by VRAM, since
-# a model bigger than VRAM spills to CPU and crawls. The SAME figure (SIZE_GB)
-# gates the big extra models below: a ~19 GB model must fit that budget.
-if [[ "$CHATI_PLATFORM" == linux ]] && (( $(detect_vram_gb) > 0 )); then
+# Pick a model sized for the machine, unless the user forced --model. With an
+# NVIDIA GPU, size by VRAM (a model bigger than VRAM spills to CPU and crawls);
+# otherwise size by system memory. The SAME figure (SIZE_GB) gates the big extra
+# models below: a ~19 GB model must fit that budget.
+if (( $(detect_vram_gb) > 0 )); then
     SIZE_GB=$(detect_vram_gb); SIZE_KIND="NVIDIA VRAM"
 else
     SIZE_GB=$(detect_ram_gb);  SIZE_KIND="memory"
@@ -848,14 +689,9 @@ Stop everything:         chati --stop
 Models installed:        ${INSTALLED_NOW:-none yet}
 Uninstall everything:    $REPO_ROOT/setup.sh --remove-all
 EOF
-if [[ "$CHATI_PLATFORM" == macos ]]; then
-    echo "  (Ollama has no auth and stays on localhost. To reach it from another machine,"
-    echo "   put it on your tailnet rather than binding it to every interface.)"
-else
-    echo "  (Ollama has no auth and stays on localhost. To reach it from your other machines,"
-    echo "   keep it on localhost and expose it over your tailnet:"
-    echo "     tailscale serve --bg --tcp 11434 tcp://127.0.0.1:11434"
-    echo "   Don't bind Ollama to 0.0.0.0 on a public server.)"
-fi
+echo "  (Ollama has no auth and stays on localhost. To reach it from your other machines,"
+echo "   keep it on localhost and expose it over your tailnet:"
+echo "     tailscale serve --bg --tcp 11434 tcp://127.0.0.1:11434"
+echo "   Don't bind Ollama to 0.0.0.0 on a public server.)"
 echo "Install log:             ${INSTALL_LOG:-$HOME/logs/chati_install_*.log}"
 echo
