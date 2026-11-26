@@ -1176,10 +1176,11 @@ test_select_extra_models_default_big_box() {
     _load_select_extra_models || { echo "could not load select_extra_models" >&2; return 1; }
     local out; out=$(select_extra_models 32 1 0)
     assert_match "$out" "bge-m3" "bge-m3 always present" \
-        && assert_match "$out" "gemma4:31b" "31b on a 32 GB box" \
-        && assert_match "$out" "gemma4:26b" "26b on a 32 GB box"
+        && assert_match "$out" "gemma4:31b" "31b in the dense pair" \
+        && assert_match "$out" "gemma4:26b-a4b-it-qat" "qat (the chat model) in the dense pair" \
+        && { [[ "$out" != *"gemma4:26b "* && "$out" != *"gemma4:26b" ]] || { echo "pair must use the qat, not a second 26b variant" >&2; return 1; }; }
 }
-run_test "select_extra_models: ≥24 GB default → bge-m3 + both gemma4" test_select_extra_models_default_big_box
+run_test "select_extra_models: want=1 on a big box → bge-m3 + 31b + qat" test_select_extra_models_default_big_box
 
 test_select_extra_models_small_box_skips_big() {
     _load_select_extra_models || return 1
@@ -1198,9 +1199,37 @@ run_test "select_extra_models: --force-models overrides the RAM guard" test_sele
 test_select_extra_models_opt_out_keeps_embedder() {
     _load_select_extra_models || return 1
     local out; out=$(select_extra_models 64 0 0)
-    assert_eq "$out" "bge-m3" "--no-extra-models still pulls bge-m3, skips gemma4"
+    assert_eq "$out" "bge-m3" "default (want=0) pulls only bge-m3, no dense pair"
 }
-run_test "select_extra_models: --no-extra-models → only bge-m3" test_select_extra_models_opt_out_keeps_embedder
+run_test "select_extra_models: default/want=0 → only bge-m3" test_select_extra_models_opt_out_keeps_embedder
+
+# --- setup.sh default model + opt-in extras + memory-aware sizing ---------------
+# The fork's default chat model is the qat MoE, picked so a low-VRAM server with
+# ample RAM still gets it, and the big dense pair is opt-in so a server stays at
+# qat + bge-m3 (DevOps rule: no extra models without consent).
+test_setup_default_model_is_qat() {
+    local f="$PROJECT_DIR/setup.sh"
+    grep -qE 'DEFAULT_CHAT_MODEL="gemma4:26b-a4b-it-qat"' "$f" \
+        && grep -qF 'echo "gemma4:26b-a4b-it-qat"' "$f" \
+        && grep -qF 'out="$out gemma4:31b gemma4:26b-a4b-it-qat"' "$f" \
+        && ! grep -qE '(DEFAULT_CHAT_MODEL|echo)[^#]*"gemma4:26b"' "$f"
+}
+run_test "setup.sh: default chat model is gemma4:26b-a4b-it-qat (not plain 26b)" test_setup_default_model_is_qat
+
+test_setup_extra_models_opt_in() {
+    local f="$PROJECT_DIR/setup.sh"
+    grep -qE '^WANT_EXTRA_MODELS=0' "$f" \
+        && grep -qE '^[[:space:]]*--extra-models\)[[:space:]]*WANT_EXTRA_MODELS=1' "$f"
+}
+run_test "setup.sh: big dense pair is opt-in (--extra-models, default off)" test_setup_extra_models_opt_in
+
+test_setup_sizes_by_vram_and_ram() {
+    local f="$PROJECT_DIR/setup.sh"
+    grep -qF '_vram_gb=$(detect_vram_gb)' "$f" \
+        && grep -qF '_ram_gb=$(detect_ram_gb)' "$f" \
+        && grep -qE 'if \(\( _vram_gb >= _ram_gb \)\)' "$f"
+}
+run_test "setup.sh: chat model sized by max(VRAM, system RAM)" test_setup_sizes_by_vram_and_ram
 
 # --- utf8_truncate (LOW: no broken trailing multibyte char to the LLM) ---
 test_utf8_truncate_drops_partial_char() {

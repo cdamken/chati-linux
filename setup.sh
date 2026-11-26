@@ -23,9 +23,12 @@ set -euo pipefail
 # The repo root is wherever THIS script lives — never assume ~/chati.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Fallback chat model if hardware detection fails. Normally the model is chosen
-# from GPU VRAM, else system memory (recommend_model). Override with --model NAME.
-DEFAULT_CHAT_MODEL="gemma4:26b"
+# Default chat model, also the fallback when hardware detection fails. The qat
+# build of gemma4 26B is a MoE (~15 GB) meant to run split across GPU + CPU, so
+# it is the right default even on a box whose VRAM alone can't hold it. Normally
+# the model is sized from available memory (recommend_model). Override with
+# --model NAME.
+DEFAULT_CHAT_MODEL="gemma4:26b-a4b-it-qat"
 SEARXNG_LOCAL_URL="http://127.0.0.1:8890"
 
 # Install everything by default; flags only subtract or tweak.
@@ -40,8 +43,8 @@ UPDATE_MODE=0                    # 1 for --update: re-apply respecting the insta
 FORCE_WEBUI=0                    # 1 for --force-webui: reinstall the OpenWebUI venv from scratch
 MODEL_EXPLICIT=0                 # set to 1 when the user forces --model
 CHAT_MODEL="$DEFAULT_CHAT_MODEL"
-WANT_EXTRA_MODELS=1              # pull the big general models by default (--no-extra-models to skip)
-FORCE_MODELS=0                   # 1 for --force-models: pull the big models even on a low-RAM box
+WANT_EXTRA_MODELS=0              # big dense gemma4 pair is opt-in (--extra-models); bge-m3 always pulled
+FORCE_MODELS=0                   # 1 for --force-models: pull the big dense pair even on a low-memory box
 SYSTEM_INSTALL=0                 # 1 for --system: link into /usr/local/bin for all users (Linux; uses sudo)
 
 # Detect system memory (GB) as a fallback when there's no NVIDIA GPU. On a GPU
@@ -51,9 +54,9 @@ detect_ram_gb() {
     echo $(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1048576 ))
 }
 recommend_model() {
-    local gb="$1"
-    if   (( gb >= 32 )); then echo "gemma4:26b"                  # ~17 GB — the default target
-    elif (( gb >= 16 )); then echo "llama3.1:8b-instruct-q8_0"   # ~8.5 GB — fast, fits comfortably
+    local gb="$1"                                               # total available memory (VRAM + system RAM)
+    if   (( gb >= 16 )); then echo "gemma4:26b-a4b-it-qat"       # ~15 GB — the default target (MoE, splits GPU+CPU)
+    elif (( gb >=  8 )); then echo "llama3.1:8b-instruct-q8_0"   # ~8.5 GB — fast, fits comfortably
     elif (( gb >=  1 )); then echo "gemma3:4b"                   # ~3.3 GB — lightweight
     else                      echo "$DEFAULT_CHAT_MODEL"; fi     # detection failed → fallback
 }
@@ -105,24 +108,25 @@ detect_system_searxng() {
 #
 #   bge-m3       — RAG embedding model. Always ensured: it is tiny (~1.2 GB) and
 #                  broadly useful, so every install has it.
-#   gemma4:31b   — dense, max-quality general model (the "judge").
-#   gemma4:26b   — faster MoE alternative.
+#   gemma4:31b             dense, max-quality general model (the "judge").
+#   gemma4:26b-a4b-it-qat  the default chat model (MoE); listed so a pool shares it.
 #
-# The two gemma4 give every machine the SAME pair of general models, so a
-# multi-host pool can route work to any box and get comparable output. They are
-# ~37 GB together, on by default (want=1). They are skipped when opted out
-# (want=0) OR when the box lacks the RAM to actually run a ~19 GB model
-# (< BIG_MODELS_MIN_GB), unless forced. A model that can't load is pure wasted
-# disk, so the RAM guard protects small boxes without changing the default on a
-# machine that can run them.
+# The pair is the two shared general models, matched to the default chat model so
+# a box opting in pulls only the extra 31b (the qat is already the chat model, not
+# a second 26B variant). OPT-IN (want=0 by default): a plain install ensures only
+# bge-m3 alongside the chat model, so a server gets nothing extra it didn't ask
+# for. `--extra-models` turns the pair on (want=1), giving a multi-host pool the
+# SAME general models on every box; it is then still skipped when the box lacks
+# the memory to run a ~19 GB model (< BIG_MODELS_MIN_GB) unless --force-models.
+# bge-m3 is ALWAYS ensured.
 #
-# EXACT tags matter: gemma4:31b is NOT gemma4:31b-it-qat (a different, quantized
-# model). Tooling that asks for `gemma4:31b` must get that exact tag.
+# EXACT tags matter: gemma4:31b is NOT gemma4:31b-it-qat, and the default chat
+# model gemma4:26b-a4b-it-qat is NOT gemma4:26b. Tooling must get the exact tag.
 BIG_MODELS_MIN_GB=24
 select_extra_models() {  # $1=ram_gb  $2=want_big(0/1)  $3=force(0/1)
     local ram="$1" want="$2" force="$3" out="bge-m3"
     if [[ "$want" -eq 1 ]] && { (( ram >= BIG_MODELS_MIN_GB )) || [[ "$force" -eq 1 ]]; }; then
-        out="$out gemma4:31b gemma4:26b"
+        out="$out gemma4:31b gemma4:26b-a4b-it-qat"
     fi
     printf '%s' "$out"
 }
@@ -150,9 +154,9 @@ OpenWebUI browser app, and a local SearXNG for /web — all started.
   ./setup.sh --no-searxng   skip SearXNG only
   ./setup.sh --model NAME    force a chat model, skipping the hardware-based pick
   ./setup.sh --no-pull       do not pull a model (assume one already exists)
-  ./setup.sh --no-extra-models  pull ONLY bge-m3 alongside the chat model; skip
-                             the two big gemma4 models (~37 GB)
-  ./setup.sh --force-models  pull the big gemma4 models even on a low-VRAM box
+  ./setup.sh --extra-models  ALSO pull the big dense pair gemma4:31b + the qat
+                             chat model (~34 GB) for a multi-host pool; off by default
+  ./setup.sh --force-models  pull the big dense pair even on a low-memory box
   ./setup.sh --update        re-apply over an existing install, respecting its
                              profile (touches OpenWebUI/SearXNG only if already
                              installed; no heavy reinstalls). Run by `chati --upgrade`.
@@ -162,14 +166,14 @@ OpenWebUI browser app, and a local SearXNG for /web — all started.
                              wedged UI). Ollama, models, chati, SearXNG untouched.
   ./setup.sh --remove-searxng uninstall ONLY the local SearXNG. Everything else kept.
 
-The chat model is sized to the hardware: on an NVIDIA GPU box, to total VRAM;
-otherwise to system memory. >=32 GB -> gemma4:26b (~17 GB), 16-31 ->
-llama3.1:8b-instruct-q8_0 (~8.5 GB), <16 -> gemma3:4b (~3.3 GB). By default setup
-also ensures three shared models so every machine matches: gemma4:31b + gemma4:26b
-(general models, ~37 GB total) and bge-m3 (RAG embeddings, ~1.2 GB). The two gemma4
-are auto-skipped below 24 GB (a ~19 GB model needs headroom); bge-m3 is always
-pulled. Use --no-extra-models for bge-m3 only, or --force-models to pull them on a
-small box anyway. To point at a remote Ollama instead of running one here, set
+The chat model is sized to total available memory (NVIDIA VRAM and system RAM
+both count, since the default MoE runs split across GPU + CPU): >=16 GB ->
+gemma4:26b-a4b-it-qat (~15 GB), 8-15 -> llama3.1:8b-instruct-q8_0 (~8.5 GB), <8 ->
+gemma3:4b (~3.3 GB). By default setup ensures just that chat model plus bge-m3
+(RAG embeddings, ~1.2 GB). Add --extra-models for the big dense pair (gemma4:31b +
+the qat, ~34 GB) so a multi-host pool shares the same general models; it is
+auto-skipped below 24 GB unless --force-models. To point at a remote Ollama
+instead of running one here, set
 OLLAMA_HOST in .env or switch with /host inside chati (no install flag needed).
   ./setup.sh --remove-all --yes   same, without the confirmation prompt
   ./setup.sh --help          show this help
@@ -190,8 +194,9 @@ while [[ $# -gt 0 ]]; do
         --webui)     WANT_WEBUI=1 ;;     # accepted for compatibility (now default)
         --searxng)   WANT_SEARXNG=1 ;;   # accepted for compatibility (now default)
         --no-pull)   WANT_PULL=0 ;;
-        --no-extra-models) WANT_EXTRA_MODELS=0 ;; # skip the big gemma4 pair (still pulls bge-m3)
-        --force-models)    FORCE_MODELS=1 ;;      # pull the big models even on a low-VRAM box
+        --extra-models)    WANT_EXTRA_MODELS=1 ;; # also pull the big dense gemma4 pair (~34 GB)
+        --no-extra-models) WANT_EXTRA_MODELS=0 ;; # back-compat no-op: the pair is already off by default
+        --force-models)    FORCE_MODELS=1; WANT_EXTRA_MODELS=1 ;; # pull the dense pair even on a low-memory box
         --update)    UPDATE_MODE=1 ;;   # re-apply over an existing install (used by `chati --upgrade`)
         --force-webui) FORCE_WEBUI=1 ;; # force a clean OpenWebUI venv reinstall
         --system)    SYSTEM_INSTALL=1 ;; # link into /usr/local/bin for all users (uses sudo)
@@ -390,7 +395,7 @@ mkdir -p "$LOG_HOME/logs"
 # Tee stdout+stderr to the log while still showing it on the console.
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 echo "==> chati --install log — $(date)"
-echo "    repo=$REPO_ROOT webui=$WANT_WEBUI searxng=$WANT_SEARXNG pull=$WANT_PULL model=$CHAT_MODEL"
+echo "    repo=$REPO_ROOT webui=$WANT_WEBUI searxng=$WANT_SEARXNG pull=$WANT_PULL target_model=$CHAT_MODEL"
 
 echo "🚀 chati setup — repo at: $REPO_ROOT"
 
@@ -537,14 +542,16 @@ step "Ensuring a chat model is available"
 installed_models() { ollama list 2>/dev/null | tail -n +2 | awk '{print $1}'; }
 have_any_model() { [[ -n "$(installed_models)" ]]; }
 
-# Pick a model sized for the machine, unless the user forced --model. With an
-# NVIDIA GPU, size by VRAM (a model bigger than VRAM spills to CPU and crawls);
-# otherwise size by system memory. The SAME figure (SIZE_GB) gates the big extra
-# models below: a ~19 GB model must fit that budget.
-if (( $(detect_vram_gb) > 0 )); then
-    SIZE_GB=$(detect_vram_gb); SIZE_KIND="NVIDIA VRAM"
+# Pick a model sized for the machine, unless the user forced --model. The default
+# qat MoE is meant to run split across GPU + CPU, so a box with modest VRAM but
+# ample system RAM (a typical server) should still get it: size by the LARGER of
+# VRAM and system RAM, since Ollama offloads the layers that don't fit VRAM to the
+# CPU. The SAME figure (SIZE_GB) gates the opt-in big dense pair below.
+_vram_gb=$(detect_vram_gb); _ram_gb=$(detect_ram_gb)
+if (( _vram_gb >= _ram_gb )); then
+    SIZE_GB=$_vram_gb; SIZE_KIND="NVIDIA VRAM"
 else
-    SIZE_GB=$(detect_ram_gb);  SIZE_KIND="memory"
+    SIZE_GB=$_ram_gb;  SIZE_KIND="system memory"
 fi
 if [[ "$MODEL_EXPLICIT" -ne 1 ]]; then
     CHAT_MODEL="$(recommend_model "$SIZE_GB")"
@@ -558,16 +565,16 @@ if [[ "$MODEL_EXPLICIT" -ne 1 ]]; then
         ok "Detected ${SIZE_GB} GB ${SIZE_KIND}"
     fi
 fi
-# Ensure the shared general models + the RAG embedder alongside the chat model,
-# so every box in a multi-host pool runs the SAME models (see select_extra_models).
-# The guard uses SIZE_GB (VRAM on a Linux GPU box, else RAM).
+# Ensure the RAG embedder (always) alongside the chat model. The big dense gemma4
+# pair is opt-in via --extra-models; when asked for, it gives every box in a
+# multi-host pool the SAME pair (see select_extra_models). The guard uses SIZE_GB.
 EXTRA_MODELS="$(select_extra_models "$SIZE_GB" "$WANT_EXTRA_MODELS" "$FORCE_MODELS")"
 if [[ "$EXTRA_MODELS" == *gemma4* ]]; then
-    warn "Will also ensure: $EXTRA_MODELS (the two gemma4 are ~37 GB together — skip with --no-extra-models)."
+    warn "Will also ensure the dense pair: $EXTRA_MODELS (gemma4:31b + the qat, ~34 GB together)."
 elif [[ "$WANT_EXTRA_MODELS" -eq 1 ]]; then
-    warn "Only ${SIZE_GB} GB ${SIZE_KIND}: skipping the big gemma4 models (a ~19 GB model needs ≥ ${BIG_MODELS_MIN_GB} GB). Ensuring: $EXTRA_MODELS. Force with --force-models."
+    warn "Only ${SIZE_GB} GB ${SIZE_KIND}: skipping the big dense gemma4 pair (a ~19 GB model needs >= ${BIG_MODELS_MIN_GB} GB). Ensuring: $EXTRA_MODELS. Force with --force-models."
 else
-    ok "--no-extra-models: ensuring only $EXTRA_MODELS alongside the chat model."
+    ok "Ensuring only $EXTRA_MODELS alongside the chat model (add the big dense pair with --extra-models)."
 fi
 
 # Small helpers for /web, pulled alongside the chat model so web research is

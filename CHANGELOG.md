@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.41.0] - 2026-11-26
+
+### Changed
+- **Default chat model is now `gemma4:26b-a4b-it-qat`** (the quantized 26B MoE,
+  ~15 GB) instead of `gemma4:26b`, matching the base. It is set as
+  `DEFAULT_CHAT_MODEL` in `setup.sh`, the `>= 16 GB` tier of `recommend_model`,
+  and the `DEFAULT_MODEL` fallback in `lib_chat.sh`; help text, `.env.example`
+  and the README tables are aligned.
+- **Model sizing now counts GPU VRAM *and* system RAM** (`max(VRAM, RAM)`), not
+  VRAM alone. The default MoE is meant to run split across GPU and CPU, so a
+  server with modest VRAM but ample RAM (e.g. an 8 GB GPU with lots of system
+  memory) now gets the qat instead of being downshifted to a tiny model.
+- **The big dense pair is now opt-in.** A plain install ensures only the chat
+  model plus `bge-m3`; `--extra-models` adds `gemma4:31b` + the qat (~34 GB) for
+  a multi-host pool, still RAM-guarded unless `--force-models`. This keeps a
+  server at `qat + bge-m3` with nothing extra pulled unless asked. The opted-in
+  pair carries the qat (not a second plain-26B variant), matching the base.
+- **Install-log header renames `model=` to `target_model=`** so it no longer
+  reads as the *active* model (it logs the pre-detection default/override).
+- README model note de-Mac'd (no more "unified memory"/"Mac"); it now describes
+  VRAM + RAM sizing on an Ubuntu box.
+
 ## [1.40.29] - 2026-11-26
 
 ### Fixed

@@ -37,7 +37,7 @@ cd ~/chati
 - 🌐 **Browser UI:** already running at **http://127.0.0.1:8888**
 - 🔎 **Web search:** local SearXNG is running and wired in — toggle it inside chati with `/web`
 
-> The installer **detects your Mac's memory and picks a model that fits**: **≥32 GB → `gemma4:26b`** (~17 GB, the active default) **and also pulls `gemma4:31b`** (~19 GB, dense/max-quality) as a second option; 16–31 GB → `llama3.1:8b-instruct-q8_0`; <16 GB → `gemma3:4b`. Force a single model with `./setup.sh --model NAME`, or switch live in chati with `/model`.
+> The installer **detects available memory (GPU VRAM + system RAM) and picks a model that fits**: **>=16 GB -> `gemma4:26b-a4b-it-qat`** (~15 GB, the active default, a MoE that runs split across GPU and CPU); 8-15 GB -> `llama3.1:8b-instruct-q8_0`; <8 GB -> `gemma3:4b`. Add the big dense pair (`gemma4:31b` + the qat, ~34 GB) for a multi-host pool with `./setup.sh --extra-models`. Force a single model with `./setup.sh --model NAME`, or switch live in chati with `/model`.
 >
 > **CLI only?** `./setup.sh --minimal` skips the browser app and SearXNG. **Undo everything?** `./setup.sh --remove-all` (see [Uninstalling](#uninstalling-remove-all)).
 >
@@ -191,17 +191,17 @@ chati
 
 (Or `./chati` from inside the repo.)
 
-> **Model note:** `setup.sh` detects unified memory and selects a model that fits, then points chati at it:
+> **Model note:** `setup.sh` detects available memory (GPU VRAM + system RAM) and selects a model that fits, then points chati at it:
 >
-> | Unified RAM | Model(s) pulled | Size |
+> | Available memory | Model pulled | Size |
 > |---|---|---|
-> | ≥ 32 GB | `gemma4:26b` (active) **+** `gemma4:31b` | ~17 GB + ~19 GB |
-> | 16–31 GB | `llama3.1:8b-instruct-q8_0` | ~8.5 GB |
-> | < 16 GB | `gemma3:4b` | ~3.3 GB |
+> | >= 16 GB | `gemma4:26b-a4b-it-qat` | ~15 GB |
+> | 8-15 GB | `llama3.1:8b-instruct-q8_0` | ~8.5 GB |
+> | < 8 GB | `gemma3:4b` | ~3.3 GB |
 >
-> On a ≥32 GB Mac both Gemma 4 models are pulled: `gemma4:26b` (MoE, fast, the active default) and `gemma4:31b` (dense, highest quality) — switch between them with `/model`.
+> The default `gemma4:26b-a4b-it-qat` is a MoE (fast) that runs split across GPU and CPU, so a server with modest VRAM but ample RAM still gets it. `--extra-models` additionally pulls the big dense pair (`gemma4:31b` + the qat, ~34 GB) so a multi-host pool shares the same general models; switch between them with `/model`.
 >
-> Force a specific model with `./setup.sh --model NAME` (e.g. `llama3.3:70b` on a high-RAM Mac). If the configured model isn't installed (e.g. after switching machines), chati **auto-falls-back** to an installed model instead of failing every message — pick any model anytime with `/model`. For a faster `/web` triage router, also pull a small model: `ollama pull llama3.2:3b`.
+> Force a specific model with `./setup.sh --model NAME` (e.g. `llama3.3:70b` on a high-RAM box). If the configured model isn't installed (e.g. after switching machines), chati **auto-falls-back** to an installed model instead of failing every message — pick any model anytime with `/model`. For a faster `/web` triage router, also pull a small model: `ollama pull llama3.2:3b`.
 >
 > **Using a remote Ollama.** On a weak laptop you can offload to a beefier machine's Ollama. Point at it with **any reachable address** (a LAN IP like `192.168.1.50:11434`, a hostname, or a Tailscale name — Tailscale is just convenient, not required): set `OLLAMA_HOST` in `.env`, or save a persistent default from inside chati with **`/host <addr>`**. **`/host`** alone lists the servers it can reach (it scans localhost + Tailscale peers) plus any you've saved, and **`/host <n|name> session`** switches just for this session. chati sends both chat and `/model`/list/pull to that box, and each box has its own installed models.
 >
@@ -408,7 +408,7 @@ near-instant while keeping a big model for the final answer.
 | Variable                  | Default                       | Purpose                                                       |
 |---------------------------|-------------------------------|---------------------------------------------------------------|
 | `OLLAMA_API`              | `http://localhost:11434`      | Ollama HTTP endpoint                                          |
-| `DEFAULT_MODEL`           | `gemma4:26b`                  | Fallback model when no `.active_ollama_model.txt` is set yet  |
+| `DEFAULT_MODEL`           | `gemma4:26b-a4b-it-qat`       | Fallback model when no `.active_ollama_model.txt` is set yet  |
 | `OLA_CURL_TIMEOUT`        | `600`                         | Streaming chat timeout (seconds)                              |
 | `OLA_CURL_META_TIMEOUT`   | `60`                          | Background meta calls (autorename, compress)                  |
 | `COMPRESS_EVERY`          | `20`                          | Auto-compress memory every N new messages                     |
