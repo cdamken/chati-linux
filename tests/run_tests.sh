@@ -337,23 +337,29 @@ test_uv_gated_on_minimal() {
 }
 run_test "setup.sh skips uv on --minimal (no WebUI/SearXNG)" test_uv_gated_on_minimal
 
-# Talk/TTS is honest about the platform: macOS-only bits (named voices, say's
-# interactive highlight colors) are hidden on Linux, and with no engine the
-# settings say "unavailable" instead of showing voice/speed options.
-test_tts_platform_honesty() {
+# Voice/TTS (/talk, /voice, /speed, macOS `say`) is a macOS-only feature and was
+# removed from the Ubuntu fork. Guard that none of its symbols or commands came
+# back, and that the model-dispatch path no longer branches on voice.
+test_voice_feature_removed() {
     cd "$PROJECT_DIR" || return 1
-    grep -qE '^tts_available\(\)' "$PROJECT_DIR/chati" \
-        || { echo "chati should define a tts_available() helper" >&2; return 1; }
-    grep -q 'unavailable (no TTS engine' "$PROJECT_DIR/chati" \
-        || { echo "settings should mark Talk unavailable when no TTS engine" >&2; return 1; }
-    # /voice must not call macOS `say` on Linux.
-    grep -q 'Named TTS voices are a macOS feature' "$PROJECT_DIR/chati" \
-        || { echo "/voice should be guarded as macOS-only on Linux" >&2; return 1; }
-    # The tts= highlight colors are shown only on macOS.
-    grep -q 'tts= highlight colors are a macOS' "$PROJECT_DIR/chati" \
-        || { echo "tts= colors line should be macOS-gated" >&2; return 1; }
+    local sym
+    for sym in VOICE_MODE DEFAULT_VOICE SAY_COLORS SAY_SPEED SAY_RATE \
+               tts_available speak_if_enabled get_voice update_say_rate; do
+        if grep -qE "\b${sym}\b" "$PROJECT_DIR/chati" "$PROJECT_DIR/lib_chat.sh"; then
+            echo "voice symbol '$sym' should be gone from the fork" >&2; return 1
+        fi
+    done
+    # The /talk, /voice and /speed command handlers must be gone.
+    if grep -qE '^\s*/(talk|voice|speed)\b|/talk\|/t\)' "$PROJECT_DIR/chati"; then
+        echo "voice commands (/talk, /voice, /speed) should be removed" >&2; return 1
+    fi
+    # send_and_capture must stream unconditionally (no VOICE_MODE branch left).
+    local dispatch; dispatch=$(awk '/^send_and_capture\(\) \{/,/^}$/' "$PROJECT_DIR/chati")
+    if printf '%s' "$dispatch" | grep -q 'VOICE_MODE'; then
+        echo "send_and_capture should no longer branch on VOICE_MODE" >&2; return 1
+    fi
 }
-run_test "Talk/TTS hides macOS-only bits on Linux, honest when no engine" test_tts_platform_honesty
+run_test "voice/TTS feature fully removed from the Ubuntu fork" test_voice_feature_removed
 
 test_mouse_reporting_reset() {
     cd "$PROJECT_DIR" || return 1
@@ -429,7 +435,7 @@ test_sticky_global_settings() {
     # Structure: the flag, the key, the command, and the load/save branches.
     grep -q 'GLOBAL_SETTINGS="OFF"' "$f" \
         || { echo "GLOBAL_SETTINGS flag should default OFF" >&2; return 1; }
-    grep -q 'GLOBAL_SETTINGS ' "$f" || grep -q 'GLOBAL_SETTINGS VOICE_MODE' "$f" \
+    grep -q 'GLOBAL_SETTINGS ' "$f" \
         || { echo "GLOBAL_SETTINGS must be a persisted settings key" >&2; return 1; }
     grep -qE '^\s+/sticky\)' "$f" \
         || { echo "chati should define a /sticky command" >&2; return 1; }
@@ -715,8 +721,7 @@ test_chati_help_documents_aliases() {
     # chati's standard: full word + short alias, both shown in help.
     local out
     out=$(awk '/^show_help\(\) \{/,/^}$/' "$PROJECT_DIR/chati")
-    assert_match "$out" "/talk +\(/t\)" "/talk alias" \
-        && assert_match "$out" "/web +\(/w\)" "/web alias" \
+    assert_match "$out" "/web +\(/w\)" "/web alias" \
         && assert_match "$out" "/shell +\(/s\)" "/shell alias" \
         && assert_match "$out" "/file +\(/f\)" "/file alias" \
         && assert_match "$out" "/batch +\(/b\)" "/batch alias"
@@ -729,7 +734,6 @@ test_chati_dispatch_has_long_forms() {
     dispatch=$(sed -n '/case "\$cmd_name" in/,/esac/p' "$PROJECT_DIR/chati")
     assert_match "$dispatch" "/file\|/f\)" "/file|/f arm" \
         && assert_match "$dispatch" "/batch\|/b\)" "/batch|/b arm" \
-        && assert_match "$dispatch" "/talk\|/t\)" "/talk|/t arm" \
         && assert_match "$dispatch" "/web\|/w\)" "/web|/w arm" \
         && assert_match "$dispatch" "/shell\|/s" "/shell|/s arm" \
         && assert_match "$dispatch" "/host\)" "/host arm"
@@ -925,37 +929,6 @@ test_move_session_files() {
         && assert_file_absent "$src"
 }
 run_test "move_session_files renames base + present companions" test_move_session_files
-
-# --- get_voice (language detection, folded in from detect_voice.sh) ---
-test_voice_spanish() {
-    local r; r=$(get_voice "¿Hola, cómo estás? Gracias por la ayuda con el análisis.")
-    assert_eq "$r" "Paulina" "Spanish text"
-}
-run_test "get_voice picks Paulina for Spanish" test_voice_spanish
-
-test_voice_english() {
-    local r; r=$(get_voice "The quick brown fox jumps over the lazy dog with your thanks.")
-    assert_eq "$r" "Samantha" "English text"
-}
-run_test "get_voice picks Samantha for English" test_voice_english
-
-test_voice_empty_fallback() {
-    local r; r=$(get_voice "")
-    assert_eq "$r" "Samantha" "empty input"
-}
-run_test "get_voice falls back to Samantha on empty input" test_voice_empty_fallback
-
-test_voice_russian() {
-    local r; r=$(get_voice "Привет, как дела? Спасибо за помощь.")
-    assert_eq "$r" "Milena" "Russian text"
-}
-run_test "get_voice picks Milena for Russian" test_voice_russian
-
-test_voice_arabic() {
-    local r; r=$(get_voice "مرحبا كيف حالك شكرا")
-    assert_eq "$r" "Maged" "Arabic text"
-}
-run_test "get_voice picks Maged for Arabic" test_voice_arabic
 
 # --- clean_subqueries (decomposer output normalization) ---
 test_clean_subqueries_bullets_and_numbers() {
@@ -1577,7 +1550,6 @@ run_test "active_model: per-terminal choice with global fallback" test_active_mo
 # --- per-session settings persistence (#37) ---
 eval "$(awk '/^CHATI_SETTINGS_KEYS=/,/\)/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^ansi_color\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
-eval "$(awk '/^update_say_rate\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_write\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_write_global\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^settings_read\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
@@ -1588,7 +1560,6 @@ eval "$(awk '/^reload_settings_announce\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 # Factory baseline used by the #60 tests below.
 _write_builtin_baseline() {
     FORCE_LANG=auto WEB_MODE=OFF THINK_MODE=OFF AGENT_MODE=OFF AGENT_AUTOACCEPT=OFF \
-        VOICE_MODE=OFF DEFAULT_VOICE=AUTO SAY_SPEED=1.0 SAY_COLORS=white/green \
         USER_COLOR_NAME=cyan AI_COLOR_NAME=default
     settings_write "$BUILTIN_SETTINGS_FILE"
 }
@@ -1596,15 +1567,13 @@ _write_builtin_baseline() {
 test_session_settings_roundtrip() {
     local f="$SANDBOX/A_settings"
     FORCE_LANG=es WEB_MODE=ON THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=OFF \
-        VOICE_MODE=OFF DEFAULT_VOICE=Paulina SAY_SPEED=1.5 SAY_COLORS=white/green \
         USER_COLOR_NAME=cyan AI_COLOR_NAME=green
     settings_write "$f"
-    FORCE_LANG=auto WEB_MODE=OFF AGENT_MODE=OFF SAY_SPEED=1.0 AI_COLOR_NAME=default
+    FORCE_LANG=auto WEB_MODE=OFF AGENT_MODE=OFF AI_COLOR_NAME=default
     settings_read "$f" || { echo "settings_read failed" >&2; return 1; }
     assert_eq "$FORCE_LANG" "es" "lang restored" \
         && assert_eq "$WEB_MODE" "ON" "web restored" \
         && assert_eq "$AGENT_MODE" "ON" "shell restored" \
-        && assert_eq "$SAY_SPEED" "1.5" "speed restored" \
         && assert_eq "$AI_COLOR_NAME" "green" "ai color restored"
 }
 run_test "per-session settings round-trip (write then read)" test_session_settings_roundtrip
@@ -1616,7 +1585,6 @@ run_test "per-session settings round-trip (write then read)" test_session_settin
 test_global_defaults_never_persist_autoaccept() {
     local f="$SANDBOX/defaults_settings"
     FORCE_LANG=auto WEB_MODE=OFF THINK_MODE=OFF AGENT_MODE=ON AGENT_AUTOACCEPT=ON \
-        VOICE_MODE=OFF DEFAULT_VOICE=AUTO SAY_SPEED=1.0 SAY_COLORS=white/green \
         USER_COLOR_NAME=cyan AI_COLOR_NAME=default
     settings_write_global "$f"
     # The live toggle is untouched for THIS session...

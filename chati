@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.40.23"
+CHATI_VERSION="1.40.24"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -420,20 +420,15 @@ else
     CHATI_OS_LABEL="machine"
 fi
 LAST_RESPONSE=""
-DEFAULT_VOICE="AUTO"     # Automatic voice detection
-VOICE_MODE="OFF"         # Global talk toggle
 WEB_MODE="OFF"           # Global web search toggle
 THINK_MODE="OFF"         # Show the model's reasoning (/think); reasoning models only
 AGENT_MODE="OFF"         # Global autonomous agent toggle
 AGENT_AUTOACCEPT="OFF"   # /sY: run EVERY proposed command without asking
 GLOBAL_SETTINGS="OFF"    # /sticky: one shared config for ALL sessions (no per-session state)
 FORCE_LANG="auto"        # Language forcing (auto, en, es, de, etc.)
-SAY_COLORS="white/green" # Default colors for speech highlighting
-SAY_SPEED=1.0            # Speech speed multiplier (1.0 = 200 wpm)
-SAY_RATE=200             # Calculated words per minute
 VALID_LANG_CODES=("auto" "en" "es" "de" "fr" "pt" "it" "ru" "ja" "ko" "zh" "ar" "hi")
 
-# --- Chat text colors (distinct from SAY_COLORS, which is TTS highlighting) ---
+# --- Chat text colors ---
 # Colour what YOU type vs what the AI answers, so a long transcript is easy to
 # scan. Names map to ANSI SGR codes; "default" = the terminal's own color (no
 # code). Configure per-machine via CHATI_USER_COLOR / CHATI_AI_COLOR (env), or
@@ -458,18 +453,13 @@ AI_COLOR_NAME="${CHATI_AI_COLOR:-default}"
 USER_COLOR=$(ansi_color "$USER_COLOR_NAME")
 AI_COLOR=$(ansi_color "$AI_COLOR_NAME")
 
-update_say_rate() {
-    SAY_RATE=$(awk -v s="$SAY_SPEED" 'BEGIN { r=s*200; if(r<50)r=50; if(r>600)r=600; print int(r) }')
-}
-
 # --- Per-session settings (#37) ---
 # The runtime toggles below travel WITH the session: saved when you leave/switch,
 # restored when you return, so each conversation keeps its own config. A NEW
 # session inherits the editable global DEFAULTS (see /defaults). Model + prompt
 # are handled separately (prompt already per-session; model default is global).
 CHATI_SETTINGS_KEYS=(FORCE_LANG WEB_MODE THINK_MODE AGENT_MODE AGENT_AUTOACCEPT \
-                     GLOBAL_SETTINGS VOICE_MODE DEFAULT_VOICE SAY_SPEED SAY_COLORS \
-                     USER_COLOR_NAME AI_COLOR_NAME)
+                     GLOBAL_SETTINGS USER_COLOR_NAME AI_COLOR_NAME)
 DEFAULTS_SETTINGS_FILE="${DEFAULTS_SETTINGS_FILE:-$CHATI_DATA_HOME/defaults_settings}"
 # Factory snapshot of the built-in toggle values (as initialized above), captured
 # ONCE before anything loads over them. load_active_settings resets to these
@@ -500,7 +490,8 @@ settings_write_global() {
     AGENT_AUTOACCEPT="$_save_auto"
 }
 # Read a settings file into the runtime toggles (known keys only), then refresh
-# the derived state (colors, speech rate). Returns 1 if the file is absent.
+# the derived state (colors). Returns 1 if the file is absent. Unknown keys from
+# an older settings file (e.g. retired voice/speech keys) are simply ignored.
 settings_read() {
     local f="$1" k v
     [[ -f "$f" ]] || return 1
@@ -508,7 +499,6 @@ settings_read() {
         case " ${CHATI_SETTINGS_KEYS[*]} " in *" $k "*) printf -v "$k" '%s' "$v" ;; esac
     done < "$f"
     USER_COLOR=$(ansi_color "$USER_COLOR_NAME"); AI_COLOR=$(ansi_color "$AI_COLOR_NAME")
-    update_say_rate
     return 0
 }
 # Capture the factory defaults NOW, before any session/defaults file loads over
@@ -784,53 +774,9 @@ agent_cmd_is_safe() {
     return 1
 }
 
-# Speak the given text via macOS `say` using auto-detected voice + current
-# colors/rate. Does nothing if VOICE_MODE is off or the text is empty.
-# --interactive prints the text with word-by-word highlight as it's spoken,
-# which IS the on-screen rendering when voice is on. To avoid a double
-# print, send_and_capture suppresses ola's own streaming output when
-# VOICE_MODE is on (the thinking indicator on stderr still shows).
-# Is there a usable text-to-speech engine on this machine? macOS always has
-# `say`; Linux needs speech-dispatcher (spd-say) or espeak. The Talk setting is
-# honest about this instead of pretending to speak when nothing can.
-tts_available() {
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        command -v say >/dev/null 2>&1
-    else
-        command -v spd-say >/dev/null 2>&1 || command -v espeak-ng >/dev/null 2>&1 || command -v espeak >/dev/null 2>&1
-    fi
-}
-
-speak_if_enabled() {
-    local text="$1"
-    [[ "$VOICE_MODE" == "ON" && -n "$text" ]] || return 0
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        local voice
-        voice=$(get_voice "$text")
-        echo "$text" | say -v "$voice" -r "$SAY_RATE" --interactive="$SAY_COLORS"
-        return 0
-    fi
-    # Linux has no `say`. Use speech-dispatcher or espeak if installed; otherwise
-    # skip quietly (voice output is best-effort, never fatal). No interactive
-    # color highlighting there — that is a macOS `say` feature.
-    if command -v spd-say >/dev/null 2>&1; then
-        spd-say -w -- "$text" >/dev/null 2>&1 || true
-    elif command -v espeak-ng >/dev/null 2>&1; then
-        espeak-ng -s "$SAY_RATE" -- "$text" >/dev/null 2>&1 || true
-    elif command -v espeak >/dev/null 2>&1; then
-        espeak -s "$SAY_RATE" -- "$text" >/dev/null 2>&1 || true
-    fi
-}
-
-# Dispatch a message to ola, capture the response, speak it if needed,
-# trigger memory compression, and wipe the per-turn web research cache.
-# This is the canonical "talk to the model" path used by the main loop
-# and every /command that feeds the AI.
-#
-# When VOICE_MODE is ON, we suppress ola's streamed stdout — say
-# --interactive will render the response with highlighting as it speaks,
-# so showing it twice would be noisy. stderr (the 🤔 thinking glyph and
-# any errors) is left alone.
+# Dispatch a message to ola, capture the response, trigger memory compression,
+# and wipe the per-turn web research cache. This is the canonical "talk to the
+# model" path used by the main loop and every /command that feeds the AI.
 send_and_capture() {
     # Turn on Ollama's reasoning channel for this call when /think is on; ola
     # renders it in gray and never saves it to history. Off = normal turn.
@@ -854,14 +800,10 @@ send_and_capture() {
     export OLA_MESSAGE_FILE="$_ola_msg_file"
     printf '%s' "$*" > "$_ola_msg_file"
     local _chat_rc=0
-    if [[ "$VOICE_MODE" == "ON" ]]; then
-        "$CHAT_CMD" >/dev/null; _chat_rc=$?
-    else
-        # Colour the streamed answer (reset always, even if it errors out).
-        [[ -n "$AI_COLOR" ]] && printf '%s' "$AI_COLOR"
-        "$CHAT_CMD"; _chat_rc=$?
-        [[ -n "$AI_COLOR" ]] && printf '%s' "$RESET_COLOR"
-    fi
+    # Colour the streamed answer (reset always, even if it errors out).
+    [[ -n "$AI_COLOR" ]] && printf '%s' "$AI_COLOR"
+    "$CHAT_CMD"; _chat_rc=$?
+    [[ -n "$AI_COLOR" ]] && printf '%s' "$RESET_COLOR"
     rm -f "$_ola_msg_file"; unset OLA_MESSAGE_FILE
     # Ctrl-C during streaming: ola was killed and the main-loop INT trap set
     # the flag. Bail before speaking/compressing a truncated reply — the loop
@@ -877,7 +819,6 @@ send_and_capture() {
         return "$_chat_rc"
     fi
     LAST_RESPONSE=$(cat "$LAST_RESPONSE_FILE" 2>/dev/null || echo "")
-    speak_if_enabled "$LAST_RESPONSE"
     maybe_compress
     # Surface the web research summary AFTER the response so it's the
     # last thing on screen for this turn (otherwise the streamed answer
@@ -1512,26 +1453,7 @@ show_settings() {
         http://localhost:11434|http://127.0.0.1:11434) ;;
         *) model_where="   🛰️  $OLLAMA_API" ;;
     esac
-    # Talk is only real if the machine has a TTS engine. On a Linux box without
-    # speech-dispatcher/espeak, say so plainly instead of showing voice/speed
-    # options that would do nothing.
-    # macOS `say` has named voices and interactive color highlighting; Linux
-    # engines (spd-say/espeak) have neither, so on Linux we show only what works
-    # (speed). No engine at all -> say so plainly.
-    local talk_line colors_line
-    if ! tts_available; then
-        talk_line="unavailable (no TTS engine — install speech-dispatcher or espeak)"
-    elif chati_is_mac; then
-        talk_line="$VOICE_MODE (Voice: $DEFAULT_VOICE, Speed: ${SAY_SPEED}x, Colors: $SAY_COLORS)"
-    else
-        talk_line="$VOICE_MODE (Speed: ${SAY_SPEED}x)"
-    fi
-    # The tts= highlight colors are a macOS `say --interactive` feature only.
-    if chati_is_mac; then
-        colors_line="you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME · tts=$SAY_COLORS  (/color to change)"
-    else
-        colors_line="you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME  (/color to change)"
-    fi
+    local colors_line="you=$USER_COLOR_NAME · ai=$AI_COLOR_NAME  (/color to change)"
     cat << EOF
 
 Current Chati Settings:
@@ -1542,7 +1464,6 @@ Current Chati Settings:
 💭 Thinking: $THINK_MODE   (/think — show reasoning; reasoning models only)
 🐚 Shell:    $agent_status
 🔗 Sticky:   $GLOBAL_SETTINGS   (/sticky — one shared config for all sessions)
-🗣️  Talk:     $talk_line
 🎨 Colors:   $colors_line
 📅 Session:  $curr_sess
 🎭 Persona:  $system_prompt_text
@@ -1595,7 +1516,6 @@ Input & Files:
 
 Mode Toggles:
 -------------
-/talk  (/t)             Toggle auto-speech.
 /web   (/w)             Toggle web research. Every query is decomposed
                         by the LLM into atomic sub-questions and each is
                         searched separately via the configured SearXNG
@@ -1636,11 +1556,8 @@ Configuration:
 /host <n|name> session  Switch for THIS session only (not saved to .env).
 /host forget <n|name>   Remove a saved server from the list.
 /lang [code]            List or set response language (auto, en, es, …).
-/voice [name]           List or set TTS voice (Samantha, Anna, Paulina, …).
-/speed [mult]           Set speech speed multiplier (0.25 – 3.0).
-/color                  Show the color menu (chat text + voice/TTS highlight).
+/color                  Show the color menu (chat text colors).
 /color you|ai <name>    Set chat TEXT color for your input vs the AI reply.
-/color tts <fg/bg>      Set the voice/TTS highlight colors.
                         (default black red green yellow blue magenta cyan
                         white gray). Env: CHATI_USER_COLOR / CHATI_AI_COLOR.
 
@@ -1928,13 +1845,6 @@ while true; do
                 fi
                 ;;
             /batch|/b)   macro_sola "$cmd_args" ;;
-            /talk|/t)
-                if [[ "$VOICE_MODE" == "ON" ]]; then VOICE_MODE="OFF"; else VOICE_MODE="ON"; fi
-                echo "🗣️  Auto-Voice: $VOICE_MODE"
-                if [[ "$VOICE_MODE" == "ON" ]] && ! tts_available; then
-                    echo "   ⚠️  No TTS engine on this machine — nothing will be spoken."
-                    echo "      Install one: sudo apt install speech-dispatcher  (or espeak-ng)"
-                fi ;;
             /color)
                 # ONE place for every color: chat text (you/ai) + the voice/TTS
                 # highlight. `/color` with no args prints a menu of all of them.
@@ -1945,8 +1855,6 @@ while true; do
                     echo "   Chat text:"
                     echo "     you = ${USER_COLOR}${USER_COLOR_NAME}${RESET_COLOR}   → /color you <name>"
                     echo "     ai  = ${AI_COLOR}${AI_COLOR_NAME}${RESET_COLOR}   → /color ai <name>"
-                    echo "   Voice highlight (TTS, spoken text):"
-                    echo "     tts = $SAY_COLORS   → /color tts <fg/bg>"
                     echo "   Names: default black red green yellow blue magenta cyan white gray"
                 elif [[ "$csub" == you || "$csub" == user ]]; then
                     if [[ -n "$cval" ]]; then
@@ -1958,13 +1866,8 @@ while true; do
                         AI_COLOR_NAME="$cval"; AI_COLOR=$(ansi_color "$cval")
                         echo "✅ AI text color → ${AI_COLOR}${cval}${RESET_COLOR}"
                     else echo "Usage: /color ai <name>"; fi
-                elif [[ "$csub" == tts || "$csub" == voice || "$csub" == speech ]]; then
-                    # say --interactive=COLORS needs exactly fg/bg from a fixed palette.
-                    if [[ "$cval" =~ ^[a-z]+/[a-z]+$ ]]; then
-                        SAY_COLORS="$cval"; echo "✅ Voice highlight (TTS) → $SAY_COLORS"
-                    else echo "❌ Use foreground/background, e.g. /color tts white/green"; fi
                 else
-                    echo "Usage: /color [you|ai <name> | tts <fg/bg>]   (run /color for the menu)"
+                    echo "Usage: /color [you|ai <name>]   (run /color for the menu)"
                 fi
                 ;;
             /ocr)
@@ -2067,19 +1970,6 @@ while true; do
                         echo "   Switch to a reasoning model with /model (e.g. deepseek-r1:7b), then /think again."
                     fi
                 fi ;;
-            /speed)
-                if [[ -n "$cmd_args" ]]; then
-                    if [[ "$cmd_args" =~ ^[0-9]*\.?[0-9]+$ ]]; then
-                        SAY_SPEED="$cmd_args"
-                        update_say_rate
-                        echo "🗣️  Speech speed set to: ${SAY_SPEED}x ($SAY_RATE wpm)"
-                    else
-                        echo "❌ Invalid speed. Use a multiplier (e.g., /speed 1.5)."
-                    fi
-                else
-                    echo "🗣️  Current speech speed: ${SAY_SPEED}x ($SAY_RATE wpm)"
-                fi
-                ;;
             /model|/models)
                 if [[ -n "$cmd_args" ]]; then
                     "$OLA_MODEL_CMD" set "$cmd_args"
@@ -2188,7 +2078,6 @@ while true; do
                     echo "🌐 Supported LLM response language codes:"
                     echo "${VALID_LANG_CODES[*]}"
                     echo "Current: $FORCE_LANG"
-                    echo "(use /voice to set the TTS voice)"
                 else
                     arg_lower=$(echo "$cmd_args" | tr '[:upper:]' '[:lower:]')
                     if [[ " ${VALID_LANG_CODES[*]} " =~ \ ${arg_lower}\  ]]; then
@@ -2198,24 +2087,6 @@ while true; do
                         echo "❌ Unknown language code: $cmd_args"
                         echo "Valid: ${VALID_LANG_CODES[*]}"
                     fi
-                fi
-                ;;
-            /voice)
-                if ! chati_is_mac; then
-                    echo "🗣️  Named TTS voices are a macOS feature; on Linux chati uses the"
-                    echo "    system default voice (speech-dispatcher/espeak). /voice does nothing here."
-                elif [[ -z "$cmd_args" ]]; then
-                    echo "🗣️  Available macOS voices:"
-                    say -v "?"
-                    echo ""
-                    echo "Current: $DEFAULT_VOICE  (AUTO = pick based on output language)"
-                else
-                    if [[ "$cmd_args" == "auto" || "$cmd_args" == "AUTO" ]]; then
-                        DEFAULT_VOICE="AUTO"
-                    else
-                        DEFAULT_VOICE="$cmd_args"
-                    fi
-                    echo "🗣️  Voice set to: $DEFAULT_VOICE"
                 fi
                 ;;
             *)       echo "❓ Unknown command: $cmd_name." ;;

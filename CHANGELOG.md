@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.24] - 2026-11-26
+
+### Removed
+- **Voice / text-to-speech is gone from the Ubuntu fork.** The `/talk` (`/t`),
+  `/voice` and `/speed` commands, the `VOICE_MODE`/`DEFAULT_VOICE`/`SAY_*`
+  settings, the `tts_available`/`speak_if_enabled`/`get_voice` helpers and the
+  macOS `say` path were all removed. Voice is a macOS feature in the base `chati`
+  repo; it does not belong in the Linux-only fork. Old settings files that still
+  carry `VOICE_MODE=`/`SAY_*=` lines load fine (the reader ignores unknown keys).
+  `/color` no longer has a `tts` target, and the settings screen drops the Talk
+  row. `send_and_capture` now streams the model's reply unconditionally.
+
 ## [1.37.0] - 2026-10-22
 
 Commands are dashed again. A command carries a `--`; a bare word is reserved
