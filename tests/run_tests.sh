@@ -495,28 +495,73 @@ test_upgrade_can_track_git_ref() {
 }
 run_test "chati --upgrade can track a git ref (--track) for testing" test_upgrade_can_track_git_ref
 
-# U1: release-mode upgrade installs the release TAG, not origin/main's tip —
-# otherwise commits pushed after the tag run (as root, on a system install).
-test_upgrade_release_pins_tag() {
-    cd "$PROJECT_DIR" || return 1
-    local f="$PROJECT_DIR/chati" body
-    body=$(awk '/^chati_self_update\(\) \{/,/^}$/' "$f")
-    # Release branch (the else of the track_ref test) must fetch tags and check
-    # out v$latest, and must NOT `git pull` the branch tip.
-    printf '%s' "$body" | grep -q 'fetch --quiet --tags origin' \
-        || { echo "release upgrade must fetch tags" >&2; return 1; }
-    printf '%s' "$body" | grep -q 'merge --ff-only --quiet "v$latest"' \
-        || { echo "release upgrade must fast-forward to the release tag v\$latest" >&2; return 1; }
-    if printf '%s' "$body" | grep -qE 'pull --ff-only'; then
-        echo "release upgrade must not pull the branch tip (runs unreleased code as root)" >&2
-        return 1
-    fi
-    # U1 hole: a dev checkout AHEAD of the tag must not be silently detached onto
-    # it; proceed only when HEAD is an ancestor of the release tag.
-    printf '%s' "$body" | grep -q 'merge-base --is-ancestor HEAD "v$latest"' \
-        || { echo "release upgrade must refuse a checkout ahead of the tag (U1)" >&2; return 1; }
+# U1 + bug A: functional release-mode upgrade against a synthetic origin.
+# Exercises the real chati_self_update (release mode) end to end:
+#  - a STALE local tag that differs from origin must NOT abort the fetch
+#    ("would clobber existing tag"): the old `fetch --tags` killed Carlos's Mac
+#    upgrade; the fix fetches only refs/tags/v$latest with --no-tags (bug A);
+#  - it fast-forwards to the released COMMIT (not main's tip), staying on branch;
+#  - it refuses a checkout that has commits not in the release (U1 ancestor guard);
+#  - the "$cur → $latest" message isn't garbled by a $var glued to a multibyte
+#    char under a UTF-8 locale (bug B).
+_git_q() { git -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c init.defaultBranch=main "$@"; }
+test_upgrade_release_functional() {
+    local f="$PROJECT_DIR/chati"
+    local d; d=$(mktemp -d) || return 1
+    export GIT_CONFIG_GLOBAL="$d/gitconfig"; : > "$GIT_CONFIG_GLOBAL"
+    # --- synthetic origin: v1.0.0 @ c1, v2.0.0 @ c2, then an unreleased c3 ---
+    _git_q init -q "$d/origin"
+    ( cd "$d/origin"
+      printf '1.0.0\n' > VERSION; _git_q add VERSION; _git_q commit -qm c1; _git_q tag -a v1.0.0 -m v1.0.0
+      printf '2.0.0\n' > VERSION; _git_q add VERSION; _git_q commit -qm c2; _git_q tag -a v2.0.0 -m v2.0.0
+      printf '2.0.1-dev\n' > VERSION; _git_q add VERSION; _git_q commit -qm c3 ) >/dev/null 2>&1
+    local c1 c2
+    c1=$(_git_q -C "$d/origin" rev-parse v1.0.0^{commit})
+    c2=$(_git_q -C "$d/origin" rev-parse v2.0.0^{commit})
+    # --- clone, sit on main at v1.0.0, and FORCE a conflicting local v2.0.0 ---
+    _git_q clone -q "$d/origin" "$d/clone" >/dev/null 2>&1
+    ( cd "$d/clone"
+      _git_q checkout -q -B main "$c1"
+      _git_q tag -f v2.0.0 "$c1" ) >/dev/null 2>&1   # local v2.0.0 != origin's
+    # Harness: real chati_self_update + version_gt, everything else stubbed.
+    run_update() {
+        OLLAMA_API="" bash -c '
+            CHATI_DIR="'"$d/clone"'"; CHATI_VERSION="1.0.0"; CHATI_REPO="x/y"
+            export GIT_CONFIG_GLOBAL="'"$GIT_CONFIG_GLOBAL"'"
+            chati_upgrade_ref() { echo ""; }       # release mode
+            chati_latest_version() { echo "2.0.0"; }
+            chati_apply_setup() { echo "APPLIED $1"; return 0; }
+            '"$(awk '/^version_gt\(\) \{/,/^}$/' "$f")"'
+            '"$(awk '/^chati_self_update\(\) \{/,/^}$/' "$f")"'
+            chati_self_update'
+    }
+    local out rc
+    out=$(run_update 2>&1); rc=$?
+    local head branch ver
+    head=$(_git_q -C "$d/clone" rev-parse HEAD 2>/dev/null)
+    branch=$(_git_q -C "$d/clone" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    ver=$(tr -d '[:space:]' < "$d/clone/VERSION" 2>/dev/null)
+    local pass=0
+    assert_eq "$rc" "0" "upgrade succeeds despite a conflicting local tag (bug A)" || pass=1
+    assert_eq "$head" "$c2" "fast-forwarded to the released commit (v2.0.0)" || pass=1
+    assert_eq "$branch" "main" "stayed on branch main, not a detached HEAD" || pass=1
+    assert_eq "$ver" "2.0.0" "VERSION is the released one" || pass=1
+    assert_match "$out" "1.0.0 → 2.0.0" "version message isn't garbled (bug B)" || pass=1
+    # --- U1 guard: a checkout with a commit NOT in the release must be refused ---
+    ( cd "$d/clone"
+      _git_q checkout -q -B main "$c1"
+      printf 'local\n' > LOCAL; _git_q add LOCAL; _git_q commit -qm local_work ) >/dev/null 2>&1
+    local ahead_head out2
+    ahead_head=$(_git_q -C "$d/clone" rev-parse HEAD)
+    out2=$(run_update 2>&1)
+    assert_match "$out2" "commits not in release" "refuses a checkout ahead of the release (U1)" || pass=1
+    assert_eq "$(_git_q -C "$d/clone" rev-parse HEAD)" "$ahead_head" "left the ahead checkout untouched" || pass=1
+    unset -f run_update
+    unset GIT_CONFIG_GLOBAL
+    rm -rf "$d"
+    return $pass
 }
-run_test "release-mode upgrade pins the release tag, not main's tip (U1)" test_upgrade_release_pins_tag
+run_test "release-mode upgrade: synthetic origin, stale local tag, U1 guard (bug A/B)" test_upgrade_release_functional
 
 # The VERSION file and chati's CHATI_VERSION must agree: the upgrade reads VERSION
 # for the "Pulled chati $newver" line, so a drift announces the wrong version (and
