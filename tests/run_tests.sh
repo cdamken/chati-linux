@@ -1216,12 +1216,17 @@ run_test "searxng_auth_config yields nothing without creds" test_searxng_auth_co
 
 test_searxng_auth_only_on_https() {
     # Credentials must never ride on a plain-http endpoint: a local or http
-    # SearXNG is behind no auth and would get the password in clear text.
-    local fn; fn=$(awk '/^_searxng_query_one\(\) \{/,/^}$/' "$PROJECT_DIR/lib_web.sh")
-    printf '%s' "$fn" | grep -q 'base" == https://\*' \
+    # SearXNG is behind no auth and would get the password in clear text. BOTH
+    # paths that build creds must gate on https: the query AND the /web preflight.
+    local q pf
+    q=$(awk '/^_searxng_query_one\(\) \{/,/^}$/' "$PROJECT_DIR/lib_web.sh")
+    printf '%s' "$q" | grep -q 'base" == https://\*' \
         || { echo "_searxng_query_one must gate auth on an https endpoint" >&2; return 1; }
+    pf=$(awk '/^web_search_available\(\) \{/,/^}$/' "$PROJECT_DIR/lib_web.sh")
+    printf '%s' "$pf" | grep -q 'u" == https://\*' \
+        || { echo "web_search_available preflight must gate auth on an https endpoint" >&2; return 1; }
 }
-run_test "SearXNG creds only attach to HTTPS endpoints" test_searxng_auth_only_on_https
+run_test "SearXNG creds only attach to HTTPS endpoints (query + preflight)" test_searxng_auth_only_on_https
 
 # --- CHATI_INSTANCE: per-instance active state for concurrent terminals ---
 # Re-source lib_chat.sh in clean subshells (state-file vars unset so the

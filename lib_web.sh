@@ -252,7 +252,9 @@ web_search_available() {
     local ok=0 code rc auth_cfg
     local -a auth
     for u in "${urls[@]}"; do
-        auth_cfg=$(searxng_auth_config)
+        # Same rule as _searxng_query_one: creds only to an https endpoint, never
+        # to a local/plain-http one where the password would be sent in clear.
+        auth_cfg=""; [[ "$u" == https://* ]] && auth_cfg=$(searxng_auth_config)
         auth=(); [[ -n "$auth_cfg" ]] && auth=(--config "$auth_cfg")
         code=$(curl -s -o /dev/null --max-time "$timeout" --connect-timeout "${SEARXNG_CONNECT_TIMEOUT:-3}" "${auth[@]}" -G \
             --data-urlencode "q=ping" --data-urlencode "format=json" \

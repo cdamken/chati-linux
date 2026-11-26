@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.26] - 2026-11-26
+
+### Fixed
+- **Second credentials leak closed.** 1.40.25 gated the query path, but the
+  `/web` preflight (`web_search_available`) still built `SEARXNG_USER`/`PASS` for
+  every endpoint, so each `/web` sent the password to a local plain-http SearXNG.
+  The preflight now applies the same https-only rule.
+
+### Changed
+- **Removed a real Tailscale name from `.env.example`.** The `OLLAMA_HOST`
+  example used a specific host's MagicDNS name; replaced with a placeholder.
+
 ## [1.40.25] - 2026-11-26
 
 ### Fixed
