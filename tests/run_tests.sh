@@ -369,6 +369,27 @@ test_setup_prefers_system_searxng() {
 }
 run_test "setup.sh prefers an existing system SearXNG over its own" test_setup_prefers_system_searxng
 
+# A /opt system install re-exec's setup as root and chowns the tree. The admin's
+# .env must stay writable by the invoking user so in-app /host can persist to it,
+# and the install log must land where that user can read it (not /root/logs).
+test_setup_system_install_keeps_user_access() {
+    local f="$PROJECT_DIR/setup.sh"
+    grep -q 'chown "\$SUDO_USER" "\$SYSTEM_PREFIX/.env"' "$f" \
+        || { echo "setup.sh must keep .env writable by SUDO_USER after the root chown" >&2; return 1; }
+    grep -q 'LOG_HOME=' "$f" && grep -q 'getent passwd "\$SUDO_USER"' "$f" \
+        || { echo "setup.sh must write the install log to the invoking user's home under sudo" >&2; return 1; }
+}
+run_test "setup.sh system install keeps .env + log reachable by the user" test_setup_system_install_keeps_user_access
+
+# /host persists the default endpoint to .env. On a root-owned system prefix the
+# directory isn't writable, so a mktemp+mv replace fails; /host must rewrite the
+# (user-writable) .env in place instead.
+test_host_persist_handles_root_owned_prefix() {
+    grep -q 'elif \[\[ -w "\$CHAT_ENV" \]\]; then' "$PROJECT_DIR/chati" \
+        || { echo "/host must rewrite .env in place when its directory is not writable" >&2; return 1; }
+}
+run_test "/host persists to .env on a root-owned system prefix" test_host_persist_handles_root_owned_prefix
+
 # Voice/TTS (/talk, /voice, /speed, macOS `say`) is a macOS-only feature and was
 # removed from the Ubuntu fork. Guard that none of its symbols or commands came
 # back, and that the model-dispatch path no longer branches on voice.

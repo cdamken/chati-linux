@@ -376,8 +376,17 @@ if [[ "$REMOVE_SEARXNG" -eq 1 ]]; then remove_searxng; fi
 # `tail`, so the early steps — including which models got pulled and by which
 # step — used to be unrecoverable after the fact. The log keeps all of it.
 # Uninstalls are intentionally NOT logged here (remove_all wipes ~/logs).
-INSTALL_LOG="$HOME/logs/chati_install_$(date +%Y%m%d_%H%M%S).log"
-mkdir -p "$HOME/logs"
+# When re-exec'd under sudo (a /opt system install), $HOME is /root and its logs
+# are unreadable by the human who ran the install. Write the log in the invoking
+# user's home instead, so `chati --install` output stays reachable.
+LOG_HOME="$HOME"
+if [[ -n "${SUDO_USER:-}" ]]; then
+    _su_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+    [[ -n "$_su_home" && -d "$_su_home" ]] && LOG_HOME="$_su_home"
+fi
+INSTALL_LOG="$LOG_HOME/logs/chati_install_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p "$LOG_HOME/logs"
+[[ -n "${SUDO_USER:-}" ]] && chown "$SUDO_USER" "$LOG_HOME/logs" 2>/dev/null || true
 # Tee stdout+stderr to the log while still showing it on the console.
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 echo "==> chati --install log — $(date)"
@@ -486,6 +495,13 @@ if [[ "$SYSTEM_LINK" -eq 1 ]]; then
         ok "Repo available at $SYSTEM_PREFIX"
     fi
     sudo chown -R root:root "$SYSTEM_PREFIX"
+    # Keep a user-placed .env writable by the human who ran the install (sudo),
+    # so in-app `/host` can still save the default endpoint. An upgrade re-exec's
+    # setup as root and would otherwise leave the admin's .env root-owned. The
+    # rest of the shared prefix stays root-owned.
+    if [[ -f "$SYSTEM_PREFIX/.env" && -n "${SUDO_USER:-}" ]]; then
+        sudo chown "$SUDO_USER" "$SYSTEM_PREFIX/.env" 2>/dev/null || true
+    fi
     LINK_BIN="/usr/local/bin"
 else
     LINK_BIN="$HOME/.local/bin"; mkdir -p "$LINK_BIN"
@@ -726,10 +742,23 @@ fi
 # the old summary named the big gemma4 models and "auto-pulled" /web helpers even
 # on a box that skipped the big models or ran with --no-pull.
 INSTALLED_NOW="$(installed_models | paste -sd', ' -)"
+# Report the /web backend as it actually ended up, so "searxng=0" in the header
+# (true when a system SearXNG means we installed none of our own) doesn't read as
+# "/web is off".
+if [[ -n "${SYSTEM_SEARXNG:-}" ]]; then
+    WEB_BACKEND="system SearXNG at $SYSTEM_SEARXNG (wired in .env)"
+elif [[ "${SEARXNG_STARTED:-0}" -eq 1 ]]; then
+    WEB_BACKEND="bundled SearXNG at $SEARXNG_LOCAL_URL"
+elif [[ "$WANT_SEARXNG" -eq 1 ]]; then
+    WEB_BACKEND="bundled SearXNG (starts on demand with /web)"
+else
+    WEB_BACKEND="off (set SEARXNG_URLS in .env to enable /web)"
+fi
 cat <<EOF
 Service status:          chati --status
 Stop everything:         chati --stop
 Models installed:        ${INSTALLED_NOW:-none yet}
+Web search (/web):       $WEB_BACKEND
 Uninstall everything:    $REPO_ROOT/setup.sh --remove-all
 EOF
 echo "  (Ollama has no auth and stays on localhost. To reach it from your other machines,"

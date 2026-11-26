@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.28] - 2026-11-26
+
+### Fixed
+- **A `/opt` system install no longer locks the admin out of its own `.env`.**
+  An upgrade re-exec's `setup.sh` as root and chowned the whole prefix, leaving a
+  user-placed `.env` root-owned; in-app `/host` (which rewrites `.env`) then
+  couldn't save. Setup now restores the `.env` to the invoking user (`SUDO_USER`),
+  and `/host` rewrites `.env` in place when its directory isn't writable, so it
+  persists on a root-owned prefix as long as the file itself is user-writable.
+- **The install log lands where the user who ran it can read it.** Under `sudo`
+  it went to `/root/logs`; it now goes to the invoking user's `~/logs`.
+
+### Changed
+- **Install summary names the actual `/web` backend** (`system SearXNG at …`,
+  `bundled SearXNG …`, or `off`), so the header's `searxng=0` (correct when a
+  system SearXNG means none of ours was installed) no longer reads as "/web off".
+
 ## [1.40.27] - 2026-11-26
 
 ### Fixed
