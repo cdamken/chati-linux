@@ -27,8 +27,8 @@
 #   ./graph_pdf_ocr -h                 # Show help
 #
 # Dependencies:
-#   - tesseract (brew install tesseract tesseract-lang)
-#   - imagemagick (brew install imagemagick)
+#   - tesseract (sudo apt install tesseract-ocr tesseract-ocr-all)
+#   - imagemagick (sudo apt install imagemagick)
 #   - ghostscript (for PDF processing)
 #   - One of: ph, nls, or ola backends
 #
@@ -1504,13 +1504,23 @@ detect_language() {
             fi
         fi
         
-        # If available, try the specific script detector
-        if [ -f "/opt/homebrew/share/tessdata/script/$detected_script.traineddata" ]; then
-            if [[ "$VERBOSE_MODE" == "true" ]]; then
-                echo "Running detailed script detection..."
+        # If available, try the specific script detector. The script traineddata
+        # lives under the tesseract tessdata prefix, which varies by install
+        # (Homebrew on macOS, /usr/share on Debian/Ubuntu), so probe the common
+        # locations plus $TESSDATA_PREFIX instead of assuming the Homebrew path.
+        local _td
+        for _td in "${TESSDATA_PREFIX:-}" \
+                   /opt/homebrew/share/tessdata \
+                   /usr/local/share/tessdata \
+                   /usr/share/tesseract-ocr/*/tessdata \
+                   /usr/share/tessdata; do
+            if [[ -n "$_td" && -f "$_td/script/$detected_script.traineddata" ]]; then
+                if [[ "$VERBOSE_MODE" == "true" ]]; then
+                    echo "Running detailed script detection..."
+                fi
+                return 0
             fi
-            return 0
-        fi
+        done
     fi
     return 1
 }

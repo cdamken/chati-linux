@@ -461,7 +461,7 @@ test_no_hardcoded_mac() {
         grep -nE 'your Mac|user'\''s Mac|macOS shell harness' "$f" | grep -v '#' >&2
         return 1
     fi
-    grep -q 'CHATI_OS_LABEL="Mac"' "$f" \
+    grep -qE 'CHATI_OS_LABEL="[A-Za-z]' "$f" \
         || { echo "chati should set a platform label (CHATI_OS_LABEL)" >&2; return 1; }
     grep -q 'on your \$CHATI_OS_LABEL' "$f" \
         || { echo "the auto-accept warning should use \$CHATI_OS_LABEL, not 'Mac'" >&2; return 1; }

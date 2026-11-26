@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.29] - 2026-11-26
+
+### Fixed
+- **docr's detailed script detection now works on Linux.** It checked only the
+  macOS Homebrew tessdata path (`/opt/homebrew/share/tessdata`), so the feature
+  was a silent no-op on Ubuntu. It now probes `$TESSDATA_PREFIX` and the common
+  Debian/Ubuntu locations (`/usr/share/tesseract-ocr/*/tessdata`, …) too.
+
+### Changed
+- **macOS-only leftovers removed from the fork.** Dead `chati_os`/`chati_open`
+  helpers deleted; the host label is just "machine" (no `Darwin` branch); and the
+  install hints shown to users are Linux-native (`ollama.com/install.sh`,
+  `apt install lynx`) instead of `brew install …`. Misleading "Apple Silicon perf
+  tuning" comments on the general Ollama env flags were corrected. The low-level
+  `stat`/`date`/`open` shims stay cross-platform so the test suite still runs on
+  the dev machine.
+
 ## [1.40.28] - 2026-11-26
 
 ### Fixed

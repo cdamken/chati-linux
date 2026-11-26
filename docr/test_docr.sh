@@ -151,6 +151,19 @@ if [[ "${DOCR_LIVE_TESTS:-0}" == "1" ]]; then
     fi
 fi
 
+#------------------------------------------------------------------------------
+echo "tessdata script path is resolved cross-install (not Homebrew-only)"
+#------------------------------------------------------------------------------
+# The detailed-script detector must probe the Debian/Ubuntu tessdata locations
+# and $TESSDATA_PREFIX, not only the macOS Homebrew path (which made the feature
+# a silent no-op on Linux).
+if grep -q '/usr/share/tesseract-ocr/\*/tessdata' "$DOCR" \
+   && grep -q 'TESSDATA_PREFIX' "$DOCR"; then
+    ok "script-traineddata lookup covers Linux tessdata + TESSDATA_PREFIX"
+else
+    bad "script-traineddata lookup should probe Linux tessdata paths, not just Homebrew"
+fi
+
 echo
 echo "docr tests: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

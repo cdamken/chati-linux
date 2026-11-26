@@ -29,4 +29,4 @@ fi
 
 chati_svc_stop "$CHATI_WEBUI_PROC"   "OpenWebUI"
 chati_svc_stop "$CHATI_SEARXNG_PROC" "SearXNG"
-chati_stop_ollama   # systemctl on Linux (root-owned unit), pkill on macOS
+chati_stop_ollama   # systemctl when it's the system unit, else stop our serve

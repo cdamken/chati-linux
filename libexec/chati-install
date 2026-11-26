@@ -8,10 +8,10 @@
 # on your PATH (run ./chati --install from the clone), because the dispatcher
 # resolves this subcommand before chati loads its chat libraries.
 #
-# All the real install work (brew packages, OCR stack, OpenWebUI, SearXNG, PATH
+# All the real install work (apt packages, OCR stack, OpenWebUI, SearXNG, PATH
 # links) lives in setup.sh, which this hands every argument to unchanged — so
-# every setup.sh flag still works: `chati --install --client HOST`,
-# `chati --install --minimal`, `chati --install --force-webui`, etc.
+# every setup.sh flag still works: `chati --install --minimal`,
+# `chati --install --no-searxng`, `chati --install --force-webui`, etc.
 #==============================================================================
 set -o pipefail
 

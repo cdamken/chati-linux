@@ -141,21 +141,21 @@ CHATI_SEARXNG_PORT="${SEARXNG_LOCAL_PORT:-8890}"
 # Is a service running? $1 = its `pgrep -f` pattern.
 chati_svc_running() { pgrep -f "$1" >/dev/null 2>&1; }
 
-# --- Platform helpers (macOS + Linux) -----------------------------------------
-# chati runs on macOS and Ubuntu/Linux; these wrap the few OS-specific calls so
-# the service helpers below stay single-sourced.
+# --- Platform helpers ---------------------------------------------------------
+# chati targets Ubuntu/Linux, but the dev/test workflow still runs on macOS, so
+# this desktop shim stays cross-platform (open vs xdg-open).
 chati_is_mac() { [[ "$(uname -s)" == "Darwin" ]]; }
 
-# Open a URL in the desktop's default browser (open on macOS, xdg-open on Linux).
+# Open a URL in the desktop's default browser.
 chati_open_url() {
     if chati_is_mac; then command -v open >/dev/null 2>&1 && open "$1" >/dev/null 2>&1 || true
     else command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1 || true; fi
 }
 
-# True on Linux when Ollama is the systemd system service the official Linux
-# installer ships (runs as the `ollama` user). When present it must be driven
-# with systemctl — a user-level nohup/pkill can't manage a root-owned process —
-# and it already auto-starts at boot.
+# True when Ollama is the systemd system service the official Linux installer
+# ships (runs as the `ollama` user). When present it must be driven with
+# systemctl — a user-level nohup/pkill can't manage a root-owned process — and
+# it already auto-starts at boot.
 _chati_ollama_systemd() {
     chati_is_mac && return 1
     systemctl cat ollama.service >/dev/null 2>&1
@@ -171,7 +171,7 @@ _chati_ollama_systemctl() {
 # Waits for the HTTP API (not just the process) so callers can use it right away.
 chati_start_ollama() {
     if chati_svc_running "$CHATI_OLLAMA_PROC"; then echo "Ollama is already running"; return 0; fi
-    command -v ollama >/dev/null 2>&1 || { echo "ollama not found in PATH (brew install ollama, or the official Linux installer)" >&2; return 1; }
+    command -v ollama >/dev/null 2>&1 || { echo "ollama not found in PATH (install it: curl -fsSL https://ollama.com/install.sh | sh)" >&2; return 1; }
     mkdir -p "$CHATI_LOG_DIR"
     # Linux: the official installer runs Ollama as a systemd system service
     # (owned by the `ollama` user). Drive it with systemctl instead of nohup.
@@ -187,8 +187,9 @@ chati_start_ollama() {
         echo "Ollama (systemd) didn't answer in 10s (systemctl status ollama)" >&2
         return 1
     fi
-    # Apple Silicon perf tuning (Homebrew ollama's recommended flags): flash
-    # attention + q8 KV cache. Override by exporting these first.
+    # Fallback for a box without the systemd unit (a hand-started Ollama): run it
+    # ourselves. Flash attention + q8 KV cache cut VRAM use; override by exporting
+    # these first.
     export OLLAMA_FLASH_ATTENTION="${OLLAMA_FLASH_ATTENTION:-1}"
     export OLLAMA_KV_CACHE_TYPE="${OLLAMA_KV_CACHE_TYPE:-q8_0}"
     # </dev/null so a piped/non-interactive caller doesn't hold stdin open.
@@ -244,8 +245,9 @@ chati_svc_stop() {
     echo "$label stopped (forced)"
 }
 
-# Stop Ollama. On Linux systemd it is a root-owned system unit (pkill can't
-# touch it), so drive it with systemctl; on macOS it's our nohup'd process.
+# Stop Ollama. With the systemd unit it is a root-owned system service (pkill
+# can't touch it), so drive it with systemctl; otherwise it's a hand-started
+# `ollama serve` we stop by process match.
 chati_stop_ollama() {
     if _chati_ollama_systemd; then
         chati_svc_running "$CHATI_OLLAMA_PROC" || { echo "Ollama was not running"; return 0; }

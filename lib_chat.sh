@@ -470,23 +470,11 @@ log_chat() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
 }
 
-# --- Platform helpers (macOS + Linux) ----------------------------------------
-# This fork adds Linux support. The handful of OS-specific calls (BSD vs GNU
-# stat/date, open vs xdg-open) live here so the rest of the code stays clean and
-# the macOS behavior is byte-for-byte unchanged.
-chati_os() {
-    case "$(uname -s)" in
-        Darwin) printf 'macos\n' ;;
-        Linux)  printf 'linux\n' ;;
-        *)      printf 'other\n' ;;
-    esac
-}
-# Open a URL or file in the desktop's default handler.
-chati_open() {
-    if [[ "$(uname -s)" == "Darwin" ]]; then open "$@"
-    else xdg-open "$@" >/dev/null 2>&1 || true; fi
-}
-# Epoch mtime of a file: BSD `stat -f %m` on macOS, GNU `stat -c %Y` on Linux.
+# --- Platform helpers --------------------------------------------------------
+# This fork targets Ubuntu/Linux, but the dev/test workflow still runs on macOS,
+# so the low-level stat/date shims stay cross-platform (BSD vs GNU). They are NOT
+# "macOS features" — they let the same mtime logic work wherever the suite runs.
+# Epoch mtime of a file: BSD `stat -f %m`, GNU `stat -c %Y`.
 file_mtime() {
     if [[ "$(uname -s)" == "Darwin" ]]; then stat -f %m "$1" 2>/dev/null
     else stat -c %Y "$1" 2>/dev/null; fi
@@ -497,8 +485,7 @@ fmt_mtime() {
     if [[ "$(uname -s)" == "Darwin" ]]; then date -r "$e" +%Y%m%d_%H%M
     else date -d "@$e" +%Y%m%d_%H%M; fi
 }
-# Reverse the lines of stdin. Portable: macOS has `tail -r`, GNU has `tac`, so
-# neither is guaranteed — awk works on both.
+# Reverse the lines of stdin. awk avoids a tac/tail -r dependency.
 reverse_lines() { awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }'; }
 
 # Fine-tuning / training log (#12): append ONE JSONL record per user turn —

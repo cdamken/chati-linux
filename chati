@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.40.28"
+CHATI_VERSION="1.40.29"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -413,12 +413,8 @@ trap 'chati_on_exit' EXIT   # flush history + persist this session's settings (#
 
 # --- STATE ---
 # Human label for the host OS, used in user-facing warnings and the agent-mode
-# capability prompt so chati doesn't say "your Mac" on a Linux box.
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    CHATI_OS_LABEL="Mac"
-else
-    CHATI_OS_LABEL="machine"
-fi
+# capability prompt. This fork targets Ubuntu/Linux.
+CHATI_OS_LABEL="machine"
 LAST_RESPONSE=""
 WEB_MODE="OFF"           # Global web search toggle
 THINK_MODE="OFF"         # Show the model's reasoning (/think); reasoning models only
@@ -1620,12 +1616,12 @@ ensure_ollama_running() {
             return 1 ;;
     esac
     if ! command -v ollama >/dev/null 2>&1; then
-        echo "⚠️  ollama binary not found in PATH. Install it: brew install ollama" >&2
+        echo "⚠️  ollama binary not found in PATH. Install it: curl -fsSL https://ollama.com/install.sh | sh" >&2
         return 1
     fi
     echo "🚀 Starting 'ollama serve' (logs: ~/logs/ollama.log)..."
     mkdir -p "$HOME/logs"
-    # Apple Silicon perf tuning (Homebrew ollama's recommended flags): flash attention + q8 KV cache.
+    # Flash attention + q8 KV cache cut VRAM use; override by exporting these first.
     export OLLAMA_FLASH_ATTENTION="${OLLAMA_FLASH_ATTENTION:-1}"
     export OLLAMA_KV_CACHE_TYPE="${OLLAMA_KV_CACHE_TYPE:-q8_0}"
     nohup ollama serve </dev/null >"$HOME/logs/ollama.log" 2>&1 &

@@ -35,14 +35,13 @@ fetch_url() {
 
     local lynx_bin
     lynx_bin=$(command -v lynx)
-    [[ -z "$lynx_bin" && -x /opt/homebrew/bin/lynx ]] && lynx_bin=/opt/homebrew/bin/lynx
     if [[ -z "$lynx_bin" ]]; then
-        echo 'Error: lynx is not installed. Run `brew install lynx`.'
+        echo 'Error: lynx is not installed. Run `sudo apt install lynx`.'
         return 0
     fi
 
-    # Bash-only timeout: macOS has no `timeout` command, so run lynx in
-    # the background and let a watchdog kill it after $timeout seconds.
+    # Bash-only timeout (no dependency on the `timeout` binary): run lynx in the
+    # background and let a watchdog kill it after $timeout seconds.
     local out_file
     out_file=$(mktemp)
     "$lynx_bin" -dump -nolist -display_charset=utf-8 "$url" >"$out_file" 2>/dev/null &
