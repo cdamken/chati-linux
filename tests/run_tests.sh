@@ -1844,7 +1844,6 @@ eval "$(awk '/^agent_confirmed\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^agent_cmd_is_safe\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^macro_fola\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^ocr_is_ocrable\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
-eval "$(awk '/^ocr_vision_bin\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^ocr_collect_files\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^detect_ocrable_in_msg\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
 eval "$(awk '/^msg_wants_ocr\(\) \{/,/^}$/' "$PROJECT_DIR/chati")"
@@ -2010,7 +2009,7 @@ test_finetune_log_disabled() {
 }
 run_test "log_finetune_record honours CHATI_FINETUNE_LOG=0" test_finetune_log_disabled
 
-# --- OCR engine selection (Apple Vision integration) ---
+# --- OCR engine selection ---
 test_ocr_is_ocrable_new_formats() {
     local d="$SANDBOX/fmt"; mkdir -p "$d"
     local e
@@ -2023,19 +2022,6 @@ test_ocr_is_ocrable_new_formats() {
     return 0
 }
 run_test "ocr_is_ocrable accepts webp/avif/heif and rejects txt" test_ocr_is_ocrable_new_formats
-
-test_ocr_vision_bin_detection() {
-    # A compiled, executable docr/ocrvision is returned on macOS; empty elsewhere.
-    local d="$SANDBOX/docrbin"; mkdir -p "$d"
-    printf '#!/bin/bash\n' > "$d/ocrvision"; chmod +x "$d/ocrvision"
-    local r; r=$(DOCR_DIR="$d" ocr_vision_bin)
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        assert_eq "$r" "$d/ocrvision" "returns the compiled Vision helper on macOS"
-    else
-        assert_eq "$r" "" "no Vision helper off macOS"
-    fi
-}
-run_test "ocr_vision_bin finds the compiled helper (macOS)" test_ocr_vision_bin_detection
 
 test_normalize_for_decomp_arrow() {
     local r; r=$(normalize_for_decomp "3M <--> US88579Y1010")
@@ -2543,9 +2529,6 @@ phase "PHASE 2b: bash-only guard"
 # with a trailing `# bash-only-allow: <reason>` marker. `[EXEC: ...]` lines are
 # skipped: those are model-emitted example commands in the system prompt (run
 # sandboxed), not chati's own code, so the bash-only rule doesn't govern them.
-# swiftc is out of scope:
-# it compiles a native Apple Vision OCR helper that bash cannot replace, not a
-# scripting runtime standing in for shell logic.
 test_bash_only_no_foreign_runtimes() {
     # The shipped scripts only. The test harness itself is excluded: it names
     # these runtimes on purpose (to enforce this very rule), so scanning it would

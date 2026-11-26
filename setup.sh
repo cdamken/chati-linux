@@ -382,8 +382,8 @@ remove_searxng() {
 # ---- CLIENT installs: use a remote Ollama, run nothing heavy locally --------
 # Two tiers, both offload inference to a remote Ollama (no local server, no
 # models pulled, no OpenWebUI, no LOCAL SearXNG service):
-#   --client          FULL client — also installs the OCR stack (Apple Vision +
-#                     tesseract/poppler/imagemagick/ghostscript) so /ocr
+#   --client          FULL client — also installs the OCR stack
+#                     (tesseract/poppler/imagemagick/ghostscript) so /ocr
 #                     and /file on images/PDFs work, and can do /web by pointing
 #                     at a remote SearXNG URL.
 #   --client-minimal  BARE client — only curl/jq/lynx + the ollama CLI. Chat
@@ -420,14 +420,6 @@ client_install() {
     local brew_bin; brew_bin="$(brew --prefix)/bin"
     ln -sf "$REPO_ROOT/chati"            "$brew_bin/chati"   2>/dev/null
     ok "Linked 'chati' onto your PATH"
-
-    # FULL: build the Apple Vision OCR helper (fast, reads HEIC; falls back to
-    # tesseract if swiftc is missing).
-    if (( full )) && command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
-        swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null \
-            && ok "Apple Vision OCR ready (docr/ocrvision)" \
-            || warn "Vision helper didn't compile — OCR will use tesseract."
-    fi
 
     # Point at the remote Ollama, persisted in .env (survives restarts).
     if [[ -n "$host" ]]; then
@@ -641,25 +633,6 @@ if link_run ln -sf "$REPO_ROOT/chati" "$LINK_BIN/chati" 2>/dev/null; then
     esac
 else
     warn "Couldn't link into $LINK_BIN — run it as ./chati, or add the repo to your PATH."
-fi
-
-# ---- 5c. Apple Vision OCR helper (macOS only) -------------------------------
-# Compile the native Vision text-recognition helper so chati's OCR uses it
-# (much faster and more accurate than tesseract on real photos, reads HEIC
-# directly). Non-fatal: if swiftc is missing or the build fails, chati falls
-# back to docr/tesseract automatically. On Linux this helper doesn't exist and
-# OCR uses tesseract/pdftotext, so the step is skipped silently (nothing to say).
-if [[ "$CHATI_PLATFORM" == macos ]]; then
-    step "Building the Apple Vision OCR helper"
-    if command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
-        if swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null; then
-            ok "Apple Vision OCR ready (docr/ocrvision), the default OCR engine on macOS"
-        else
-            warn "Vision helper didn't compile; chati will use docr/tesseract for OCR."
-        fi
-    else
-        warn "swiftc not found; skipping Vision helper; chati will use docr/tesseract for OCR."
-    fi
 fi
 
 # ---- 6. Start Ollama ---------------------------------------------------------

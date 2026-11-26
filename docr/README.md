@@ -15,9 +15,6 @@ This directory contains tools for document processing and OCR (Optical Character
 # Process with specific language
 ./docr -l spa documento.pdf
 
-# Apple Vision engine (accents, photos, reads PDF/HEIC directly)
-./docr -e vision scan.heic
-
 # olmocr2 vision-LLM for tables/structure, into a chosen output dir
 ./docr -e olmocr2 -o /tmp/out tablas.pdf
 ```
@@ -27,11 +24,10 @@ This directory contains tools for document processing and OCR (Optical Character
 | engine | strengths | needs |
 |---|---|---|
 | `tesseract` (default) | fast, offline, clean prose; multi-profile DPI tuning | `tesseract`, `magick` |
-| `vision` | best character accuracy on accents/photos; reads PDF/HEIC natively | the `ocrvision` binary (`swiftc -O ocr_vision.swift -o ocrvision`), macOS |
 | `olmocr2` | reconstructs tables/structure as text; best for dosage tables and layout-heavy scans (slower) | Ollama + `richardyoung/olmocr2:7b-q8`, `curl`, `jq` |
 
-The multi-profile DPI search runs for `tesseract` only; `vision`/`olmocr2` rasterize
-at a fixed DPI and skip the probing passes. olmocr2 settings are overridable via
+The multi-profile DPI search runs for `tesseract` only; `olmocr2` rasterizes
+at a fixed DPI and skips the probing passes. olmocr2 settings are overridable via
 `DOCR_OLMOCR_MODEL`, `DOCR_OLMOCR_NUM_CTX`, `DOCR_OLMOCR_HOST`, `DOCR_OLMOCR_PROMPT`.
 
 ## Language Support

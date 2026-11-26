@@ -30,7 +30,7 @@ if [[ -n "$_subpath" ]]; then
 fi
 unset _subpath
 
-CHATI_VERSION="1.40.21"
+CHATI_VERSION="1.40.22"
 
 show_version() { echo "chati $CHATI_VERSION"; }
 
@@ -1227,16 +1227,6 @@ ocr_is_ocrable() {
     esac
 }
 
-# Path to the compiled Apple Vision OCR helper (macOS only), or empty. Vision
-# reads images (incl. HEIC/WEBP/AVIF) and PDFs natively and vastly outperforms
-# tesseract on real-world photos (angle, glare) — the preferred engine on a Mac.
-# Built by setup.sh from docr/ocr_vision.swift; also honoured on PATH.
-ocr_vision_bin() {
-    [[ "$(uname -s)" == "Darwin" ]] || return 0
-    if [[ -x "$DOCR_DIR/ocrvision" ]]; then echo "$DOCR_DIR/ocrvision"; return 0; fi
-    command -v ocrvision 2>/dev/null
-}
-
 # True if a PDF already carries a selectable text layer (a digital PDF, not a
 # scan) — then pdftotext extracts it instantly and losslessly, no OCR needed.
 pdf_has_text_layer() {
@@ -1266,63 +1256,32 @@ ocr_collect_files() {
     [[ ${#hits[@]} -gt 0 ]] && printf '%s\n' "${hits[@]}"
 }
 
-# OCR a list of image/PDF files via docr and PRINT the combined extracted
-# text to stdout (with a "=== filename ===" header per file). Progress and
-# warnings go to stderr so the captured stdout stays clean text. Shared by
-# the /ocr command and the automatic detection in the send path (#21).
-# Run an OCR command in the background with a live elapsed heartbeat on stderr,
-# and echo its stdout (the extracted text) cleanly to stdout. Keeps the captured
-# text free of progress noise. Args: the command + its arguments.
-ocr_run_capture() {
-    local out; out=$(mktemp)
-    "$@" >"$out" 2>/dev/null &
-    local pid=$! start=$SECONDS
-    while kill -0 "$pid" 2>/dev/null; do
-        printf '\r   ⏳ working… %ds' "$((SECONDS - start))" >&2
-        sleep 1
-    done
-    wait "$pid"
-    printf '\r' >&2
-    cat "$out"; rm -f "$out"
-}
-
-# OCR a list of image/PDF files and PRINT the combined extracted text. Picks the
-# best engine per file (#21, Apple Vision integration):
-#   1. digital PDF (has a text layer) → pdftotext — instant, exact, no OCR.
-#   2. Apple Vision (macOS) → images incl. HEIC and scanned PDFs — fast, accurate.
-#   3. docr/tesseract → portable fallback (non-macOS, or Vision unavailable).
-# Force one with CHATI_OCR_ENGINE=auto|vision|tesseract. Recognition languages
-# via CHATI_OCR_LANGS (default "es-ES en-US de-DE"). Progress/warnings → stderr.
+# OCR a list of image/PDF files and PRINT the combined extracted text, with a
+# "=== filename ===" header per file. Progress and warnings go to stderr so the
+# captured stdout stays clean text. Shared by the /ocr command and the automatic
+# detection in the send path (#21). Picks the best engine per file:
+#   1. digital PDF (has a text layer) → pdftotext, instant and exact, no OCR.
+#   2. docr/tesseract → everything else (images, scanned PDFs).
+# Force one with CHATI_OCR_ENGINE=auto|tesseract. Progress/warnings → stderr.
 ocr_files_to_text() {
     local -a files=("$@")
     local f base ocr_out nl=$'\n' combined="" i=0 n=${#files[@]} start elapsed dlog
-    local ext engine text vision pref langs
-    vision=$(ocr_vision_bin)
+    local ext engine text pref
     pref="${CHATI_OCR_ENGINE:-auto}"
-    langs="${CHATI_OCR_LANGS:-es-ES en-US de-DE}"
     for f in "${files[@]}"; do
         i=$((i+1)); text=""; engine=""
         ext=$(printf '%s' "${f##*.}" | tr '[:upper:]' '[:lower:]')
 
-        # 1) Digital PDF → pdftotext (instant, lossless). Skipped if a specific
-        #    OCR engine was forced.
-        if [[ "$ext" == pdf && "$pref" != vision && "$pref" != tesseract ]] && pdf_has_text_layer "$f"; then
+        # 1) Digital PDF → pdftotext (instant, lossless). Skipped if tesseract
+        #    was forced.
+        if [[ "$ext" == pdf && "$pref" != tesseract ]] && pdf_has_text_layer "$f"; then
             engine="pdftotext"
             printf '📄 [%d/%d] %s — text layer found, extracting (no OCR)…\n' "$i" "$n" "$(basename "$f")" >&2
             text=$(pdftotext -layout "$f" - 2>/dev/null)
         fi
 
-        # 2) Apple Vision (macOS): images incl. HEIC, and scanned PDFs.
-        if [[ -z "$text" && -n "$vision" && "$pref" != tesseract ]]; then
-            engine="vision"
-            printf '📄 [%d/%d] %s — Apple Vision (native, GPU/Neural Engine)…\n' "$i" "$n" "$(basename "$f")" >&2
-            # $langs is an intentional word list, so it must stay unquoted.
-            # shellcheck disable=SC2086
-            text=$(ocr_run_capture "$vision" "$f" $langs)
-        fi
-
-        # 3) Fallback: docr/tesseract (writes to OCR_OUTPUTS; heartbeat inline).
-        if [[ -z "$text" && "$pref" != vision ]]; then
+        # 2) docr/tesseract (writes to OCR_OUTPUTS; heartbeat inline).
+        if [[ -z "$text" ]]; then
             engine="docr"
             printf '📄 [%d/%d] %s — docr/tesseract (CPU; no GPU activity is normal)…\n' "$i" "$n" "$(basename "$f")" >&2
             dlog=$(mktemp)

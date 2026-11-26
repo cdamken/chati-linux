@@ -74,10 +74,8 @@ get_profile_settings() {
 }
 
 # ── OCR engine backends ──────────────────────────────────────────────────────
-# docr supports three engines, selectable with -e/--engine:
+# docr supports two engines, selectable with -e/--engine:
 #   tesseract  default; fast, offline, best for clean prose (multi-profile tuned)
-#   vision     Apple Vision via the bundled ocrvision binary (macOS only); best
-#              character accuracy on accents/photos, reads PDFs/HEIC directly
 #   olmocr2    a local Ollama vision-LLM; reconstructs tables/structure as text,
 #              best for dosage tables and layout-heavy scans (slower)
 OLMOCR_MODEL="${DOCR_OLMOCR_MODEL:-richardyoung/olmocr2:7b-q8}"
@@ -86,43 +84,7 @@ OLMOCR_HOST="${DOCR_OLMOCR_HOST:-http://localhost:11434}"
 # Keep the prompt short: olmocr2 returns HTTP 400 on long prompts.
 OLMOCR_PROMPT="${DOCR_OLMOCR_PROMPT:-Transcribe all text, keeping tables as rows.}"
 
-# Map a tesseract 3-letter language code to a BCP-47 tag for Apple Vision.
-# Unknown codes yield an empty string, letting Vision auto-detect.
-tess_to_bcp47() {
-    case "$1" in
-        eng) echo "en-US" ;;
-        deu|ger) echo "de-DE" ;;
-        fra|fre) echo "fr-FR" ;;
-        spa) echo "es-ES" ;;
-        por) echo "pt-BR" ;;
-        ita) echo "it-IT" ;;
-        nld|dut) echo "nl-NL" ;;
-        rus) echo "ru-RU" ;;
-        *) echo "" ;;
-    esac
-}
-
-# Apple Vision engine. $1 image/pdf, $2 tesseract-lang, $3 output base (no ext).
-run_engine_vision() {
-    local image="$1" lang="$2" out_base="$3"
-    local bin; bin="$(dirname "$0")/ocrvision"
-    [[ -x "$bin" ]] || bin="ocrvision"
-    if [[ ! -x "$bin" ]] && ! command -v "$bin" >/dev/null 2>&1; then
-        echo "✗ Error: ocrvision binary not found (build: swiftc -O ocr_vision.swift -o ocrvision)" >&2
-        return 1
-    fi
-    local bcp; bcp="$(tess_to_bcp47 "$lang")"
-    # Pass the detected language first, English as a fallback for mixed documents.
-    if [[ -n "$bcp" && "$bcp" != "en-US" ]]; then
-        "$bin" "$image" "$bcp" en-US > "${out_base}.txt" 2>/dev/null
-    elif [[ -n "$bcp" ]]; then
-        "$bin" "$image" "$bcp" > "${out_base}.txt" 2>/dev/null
-    else
-        "$bin" "$image" > "${out_base}.txt" 2>/dev/null
-    fi
-}
-
-# olmocr2 vision-LLM via the Ollama HTTP API. Same signature as the Vision engine.
+# olmocr2 vision-LLM via the Ollama HTTP API.
 run_engine_olmocr2() {
     local image="$1" lang="$2" out_base="$3"
     local dep
@@ -160,7 +122,6 @@ run_ocr_engine() {
             tesseract -l "$lang" --psm "$psm" --oem 3 -c preserve_interword_spaces=1 \
                       "$image" "$out_base" 2>/dev/null
             ;;
-        vision)  run_engine_vision  "$image" "$lang" "$out_base" ;;
         olmocr2) run_engine_olmocr2 "$image" "$lang" "$out_base" ;;
         *) echo "✗ Error: unknown engine '$ENGINE'" >&2; return 1 ;;
     esac
@@ -747,11 +708,7 @@ check_deps() {
     for cmd in tesseract magick; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             echo "Error: Required command '$cmd' not found." >&2
-            if [[ "$(uname -s)" == "Darwin" ]]; then
-                echo "Please install:  brew install tesseract tesseract-lang imagemagick" >&2
-            else
-                echo "Please install:  sudo apt install tesseract-ocr imagemagick   (Debian/Ubuntu)" >&2
-            fi
+            echo "Please install:  sudo apt install tesseract-ocr imagemagick   (Debian/Ubuntu)" >&2
             exit 1
         fi
     done
@@ -768,8 +725,8 @@ process_file() {
     local OCR_OUTPUTS="$3"
     OPTIMAL_PSM=6
 
-    # Non-tesseract engines (vision, olmocr2) don't use tesseract's multi-profile
-    # DPI search — pick a rasterization DPI and skip the probing passes entirely.
+    # A non-tesseract engine (olmocr2) doesn't use tesseract's multi-profile
+    # DPI search: pick a rasterization DPI and skip the probing passes entirely.
     if [[ "$ENGINE" != "tesseract" ]]; then
         if [[ "$USER_SPECIFIED_QUALITY" == "true" ]]; then
             case "$QUALITY_THRESHOLD" in
@@ -949,7 +906,7 @@ process_single_image() {
     local versioned_output=$(get_versioned_filename "$base_output_name" "txt")
     local output_base=$(echo "$versioned_output" | sed 's/\.txt$//')
     
-    # Perform OCR with the selected engine (tesseract | vision | olmocr2)
+    # Perform OCR with the selected engine (tesseract | olmocr2)
     run_ocr_engine "$TEMP_FILE" "$CURRENT_LANG" "$OPTIMAL_PSM" "$output_base"
     # Check if the engine executed successfully
     if [ $? -eq 0 ]; then
@@ -1166,8 +1123,6 @@ Process images and PDFs with OCR (Optical Character Recognition)
 Options:
     -e, --engine <name>   OCR backend (default: tesseract):
                          • tesseract = fast, offline, best for clean prose
-                         • vision    = Apple Vision (macOS); best accents/photos,
-                                       reads PDF/HEIC directly (needs ./ocrvision)
                          • olmocr2   = local Ollama vision-LLM; reconstructs
                                        tables/structure (slower; needs Ollama +
                                        the olmocr2 model, curl, jq)
@@ -1225,7 +1180,6 @@ Examples:
     $script_name -ai contract.pdf             # OCR with AI summary (creates .txt + .ai.txt)
     $script_name -aio sensitive.pdf           # OCR with offline AI only (privacy mode)
     $script_name --script Latin *.jpg         # Process all JPGs with Latin script
-    $script_name -e vision scan.heic          # Apple Vision (accents, photos, HEIC)
     $script_name -e olmocr2 -o /tmp/out t.pdf # Vision-LLM for tables, safe out dir
     $script_name --list                       # Show available languages
 
@@ -1337,7 +1291,7 @@ AI_OFFLINE_ONLY=""    # Track if user wants Ollama-only summarization
 VERBOSE_MODE=""       # Track if user wants verbose output
 DEFAULT_DPI="300"     # Standard OCR resolution
 TARGET_PATH=""
-ENGINE="tesseract"           # OCR backend: tesseract | vision | olmocr2
+ENGINE="tesseract"           # OCR backend: tesseract | olmocr2
 OUTPUT_DIR=""                # Explicit output dir (-o); empty = next to input
 USER_SPECIFIED_OUTPUT=""     # Track if user set -o/--output
 
@@ -1371,12 +1325,12 @@ while [[ $# -gt 0 ]]; do
         -e|--engine)
             if [ -n "$2" ]; then
                 case "$2" in
-                    tesseract|vision|olmocr2)
+                    tesseract|olmocr2)
                         ENGINE="$2"
                         shift 2
                         ;;
                     *)
-                        echo "Error: Unknown engine '$2' (choose: tesseract, vision, olmocr2)"
+                        echo "Error: Unknown engine '$2' (choose: tesseract, olmocr2)"
                         exit 1
                         ;;
                 esac
