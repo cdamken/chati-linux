@@ -337,6 +337,23 @@ test_uv_gated_on_minimal() {
 }
 run_test "setup.sh skips uv on --minimal (no WebUI/SearXNG)" test_uv_gated_on_minimal
 
+# setup.sh must wire /web to a SearXNG already running on the box instead of
+# assuming its own on 8890 (e.g. a distro searxng.service listening on 8889).
+test_setup_prefers_system_searxng() {
+    local f="$PROJECT_DIR/setup.sh"
+    grep -qE '^detect_system_searxng\(\) \{' "$f" \
+        || { echo "setup.sh should define detect_system_searxng()" >&2; return 1; }
+    # The probe must read the service's configured port and ask for JSON.
+    grep -q 'format=json' "$f" \
+        || { echo "detect_system_searxng must probe the JSON endpoint" >&2; return 1; }
+    # A detected system endpoint is wired and preferred over the bundled install.
+    grep -q 'SYSTEM_SEARXNG=$(detect_system_searxng)' "$f" \
+        || { echo "setup.sh must run detection before the bundled SearXNG install" >&2; return 1; }
+    grep -qE 'if \[\[ -n "\$SYSTEM_SEARXNG" \]\]; then' "$f" \
+        || { echo "setup.sh must prefer the system SearXNG when one is found" >&2; return 1; }
+}
+run_test "setup.sh prefers an existing system SearXNG over its own" test_setup_prefers_system_searxng
+
 # Voice/TTS (/talk, /voice, /speed, macOS `say`) is a macOS-only feature and was
 # removed from the Ubuntu fork. Guard that none of its symbols or commands came
 # back, and that the model-dispatch path no longer branches on voice.
@@ -1180,9 +1197,9 @@ run_test "searxng_auth_config writes a 0600 creds file (off argv)" test_searxng_
 test_searxng_local_endpoint_detection() {
     # Powers the /web auto-start: only a localhost endpoint can be started here.
     local r
-    r=$(SEARXNG_URLS="https://cloud.damken.com/searx" _searxng_local_endpoint)
+    r=$(SEARXNG_URLS="https://searx.example.com/searx" _searxng_local_endpoint)
     assert_eq "$r" "" "remote-only config → nothing to start" || return 1
-    r=$(SEARXNG_URLS="https://cloud.damken.com/searx, http://localhost:8890" _searxng_local_endpoint)
+    r=$(SEARXNG_URLS="https://searx.example.com/searx, http://localhost:8890" _searxng_local_endpoint)
     assert_eq "$r" "http://localhost:8890" "picks the localhost endpoint" || return 1
     r=$(SEARXNG_URLS="http://127.0.0.1:8890/" _searxng_local_endpoint)
     assert_eq "$r" "http://127.0.0.1:8890" "127.0.0.1 counts as local (slash trimmed)" || return 1
@@ -1196,6 +1213,15 @@ test_searxng_auth_config_empty_without_creds() {
     assert_eq "$f" "" "no creds → no config file"
 }
 run_test "searxng_auth_config yields nothing without creds" test_searxng_auth_config_empty_without_creds
+
+test_searxng_auth_only_on_https() {
+    # Credentials must never ride on a plain-http endpoint: a local or http
+    # SearXNG is behind no auth and would get the password in clear text.
+    local fn; fn=$(awk '/^_searxng_query_one\(\) \{/,/^}$/' "$PROJECT_DIR/lib_web.sh")
+    printf '%s' "$fn" | grep -q 'base" == https://\*' \
+        || { echo "_searxng_query_one must gate auth on an https endpoint" >&2; return 1; }
+}
+run_test "SearXNG creds only attach to HTTPS endpoints" test_searxng_auth_only_on_https
 
 # --- CHATI_INSTANCE: per-instance active state for concurrent terminals ---
 # Re-source lib_chat.sh in clean subshells (state-file vars unset so the

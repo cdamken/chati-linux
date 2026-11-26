@@ -166,7 +166,11 @@ searxng_mark_cooldown() { # $1=url
 _searxng_query_one() {
     local base="$1" query="$2"
     local timeout="${SEARXNG_TIMEOUT:-30}" max_chars="${MAX_WEB_CHARS:-6000}"
-    local auth_cfg; auth_cfg=$(searxng_auth_config)
+    # Only attach SEARXNG_USER/PASS to an HTTPS endpoint. A local or plain-http
+    # SearXNG (e.g. http://127.0.0.1:8889) is behind no auth and would receive
+    # the password in clear text; HTTPS is the only safe place to send it.
+    local auth_cfg=""
+    [[ "$base" == https://* ]] && auth_cfg=$(searxng_auth_config)
     local -a auth=(); [[ -n "$auth_cfg" ]] && auth=(--config "$auth_cfg")
     local body http_code curl_rc
     body=$(mktemp) || { echo "Error: mktemp failed."; return 2; }
@@ -327,7 +331,7 @@ _web_search_once() {
     while IFS= read -r u; do urls+=("$u"); done < <(searxng_endpoints)
     if [[ ${#urls[@]} -eq 0 ]]; then
         echo "Error: SEARXNG_URLS / SEARXNG_URL is not configured. Set it in your .env, e.g.:"
-        echo "  export SEARXNG_URLS=\"http://localhost:8890, https://cloud.damken.com/searx\""
+        echo "  export SEARXNG_URLS=\"http://127.0.0.1:8888, https://searx.example.com\""
         return 0
     fi
 

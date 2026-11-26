@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.25] - 2026-11-26
+
+### Fixed
+- **`setup.sh` now wires `/web` to a SearXNG already on the box** instead of
+  always installing its own on port 8890. If a `searxng.service` is active and
+  answers JSON on loopback (port read from `/etc/searxng/settings.yml`, then a
+  short probe of 8888/8889/8890), setup points `SEARXNG_URLS` at it and skips the
+  bundled install. This fixes `/web` on a server that runs a system SearXNG on a
+  different port, where the old setup left no `SEARXNG_URLS` configured.
+- **Credentials only go to HTTPS endpoints.** `_searxng_query_one` no longer
+  attaches `SEARXNG_USER`/`SEARXNG_PASS` to a plain-http endpoint (e.g. a local
+  `http://127.0.0.1:8889`), where the password would travel in clear text.
+
+### Changed
+- **Removed a real host/domain from the public repo.** The `/web`-not-configured
+  error example and `installer/SEARXNG_SETUP.md` no longer reference a specific
+  deployment's domain or SSH host; they use neutral placeholders.
+
 ## [1.40.24] - 2026-11-26
 
 ### Removed

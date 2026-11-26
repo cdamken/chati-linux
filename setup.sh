@@ -72,6 +72,33 @@ detect_vram_gb() {
     [[ -n "$mib" && "$mib" -gt 0 ]] && echo $(( mib / 1024 )) || echo 0
 }
 
+# A SearXNG already installed on this box (a distro package, or a searxng.service
+# someone set up) should power /web instead of the bundled one on 8890. Echo its
+# loopback base URL if a system instance is active AND answers JSON; else nothing
+# (so the caller falls back to installing our own). Reads the port from the
+# service's settings file when present, then probes a few common ports.
+detect_system_searxng() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl is-active --quiet searxng 2>/dev/null \
+        || systemctl is-active --quiet searxng.service 2>/dev/null \
+        || return 0
+    local port="" f
+    for f in /etc/searxng/settings.yml /etc/searx/settings.yml; do
+        [[ -r "$f" ]] || continue
+        port=$(grep -E '^[[:space:]]*port:' "$f" 2>/dev/null | head -1 | grep -oE '[0-9]+')
+        [[ -n "$port" ]] && break
+    done
+    local p
+    for p in "$port" 8888 8889 8890; do
+        [[ -n "$p" ]] || continue
+        if curl -fsS --max-time 3 "http://127.0.0.1:$p/search?q=ping&format=json" >/dev/null 2>&1; then
+            printf 'http://127.0.0.1:%s' "$p"
+            return 0
+        fi
+    done
+    return 0
+}
+
 # Which models to ensure present BEYOND the RAM-selected chat model, given the
 # machine's RAM and the flags. Pure (no ollama, no network) so it is unit-
 # testable. Echoes a space-separated list.
@@ -603,7 +630,23 @@ fi
 # starts for its "search via SearXNG" toggle to come up enabled. Wires chati's
 # /web too. NON-FATAL throughout — web search is a bonus, never fails setup.
 SEARXNG_STARTED=0
-if [[ "$WANT_SEARXNG" -eq 1 ]]; then
+SYSTEM_SEARXNG=""
+[[ "$WANT_SEARXNG" -eq 1 ]] && SYSTEM_SEARXNG=$(detect_system_searxng)
+if [[ -n "$SYSTEM_SEARXNG" ]]; then
+    # A system SearXNG is already serving JSON on loopback. Wire /web to it and
+    # skip the bundled install entirely — no second instance, no port clash.
+    step "Found a system SearXNG at $SYSTEM_SEARXNG — wiring /web to it"
+    env_file="$REPO_ROOT/.env"
+    if [[ ! -f "$env_file" ]]; then
+        [[ -f "$REPO_ROOT/.env.example" ]] && cp "$REPO_ROOT/.env.example" "$env_file" || touch "$env_file"
+    fi
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?SEARXNG_URLS?=' "$env_file"; then
+        ok "SearXNG endpoint already set in .env (left as-is)"
+    else
+        printf '\nexport SEARXNG_URLS="%s"\n' "$SYSTEM_SEARXNG" >> "$env_file"
+        ok "Wired /web to $SYSTEM_SEARXNG in .env — toggle it in chati with /web"
+    fi
+elif [[ "$WANT_SEARXNG" -eq 1 ]]; then
     step "Installing local SearXNG (powers /web)"
     if "$REPO_ROOT/installer/install_searxng.sh"; then
         ok "SearXNG installed"
