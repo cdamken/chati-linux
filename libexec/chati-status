@@ -63,9 +63,30 @@ else
     echo "OpenWebUI: stopped   (start it with: chati --webui)"
 fi
 
-# --- SearXNG (auto-starts with /web) ---
-if chati_svc_running "$CHATI_SEARXNG_PROC"; then
-    echo "SearXNG:   RUNNING   (http://${SEARXNG_LOCAL_HOST:-127.0.0.1}:${SEARXNG_LOCAL_PORT:-8890})"
+# --- SearXNG (/web backend) ---
+# Report the endpoint /web will ACTUALLY use. A configured SEARXNG_URLS (a system
+# SearXNG, or a remote one) wins over the bundled instance on 8890 — on a box
+# whose SearXNG is a systemd service, the bundled process never runs even though
+# search works, so keying the status off that process alone was misleading.
+_sx_first=$(chati_searxng_urls | head -1)
+if [[ -n "$_sx_first" ]]; then
+    _sx_count=$(chati_searxng_urls | grep -c .)
+    _sx_code=$(curl -s -o /dev/null --max-time 3 -G \
+        --data-urlencode "q=ping" --data-urlencode "format=json" \
+        -w '%{http_code}' "$_sx_first/search" 2>/dev/null)
+    case "$_sx_code" in
+        2*|429|503) _sx_state="reachable" ;;
+        *)          _sx_state="unreachable (HTTP ${_sx_code:-000})" ;;
+    esac
+    if (( _sx_count > 1 )); then
+        echo "SearXNG:   configured ($_sx_count endpoints) — first $_sx_first [$_sx_state]"
+    else
+        echo "SearXNG:   configured ($_sx_first) — $_sx_state"
+    fi
+elif chati_svc_running "$CHATI_SEARXNG_PROC"; then
+    echo "SearXNG:   RUNNING   (http://${CHATI_SEARXNG_HOST:-127.0.0.1}:${CHATI_SEARXNG_PORT:-8890})"
+elif chati_searxng_installed; then
+    echo "SearXNG:   stopped   (local instance on :${CHATI_SEARXNG_PORT:-8890}, starts on its own when you use /web)"
 else
-    echo "SearXNG:   stopped   (starts on its own when you use /web)"
+    echo "SearXNG:   not configured   (set SEARXNG_URLS in .env, or install a local one; /web needs a backend)"
 fi

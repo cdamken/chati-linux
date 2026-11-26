@@ -187,6 +187,21 @@ test_chati_status_runs() {
 }
 run_test "chati status reports the three services" test_chati_status_runs
 
+# When SEARXNG_URLS points at a system/remote SearXNG, status must report that
+# configured endpoint (not key off the bundled 8890 process, which never runs on
+# a box with a system SearXNG even though /web works).
+test_chati_status_reflects_configured_searxng() {
+    cd "$PROJECT_DIR" || return 1
+    local out
+    # Port 9 (discard) refuses fast, so the probe returns quickly and offline.
+    out=$(SEARXNG_URLS="http://127.0.0.1:9" ./chati --status 2>&1) || return 1
+    assert_match "$out" "SearXNG:   configured" "status reflects the configured endpoint" || return 1
+    if printf '%s' "$out" | grep -q "SearXNG:   stopped"; then
+        echo "status must not say 'stopped' when an endpoint is configured" >&2; return 1
+    fi
+}
+run_test "chati status reflects a configured SearXNG endpoint" test_chati_status_reflects_configured_searxng
+
 test_service_commands_present() {
     # The three user-facing service commands exist and are executable.
     local s

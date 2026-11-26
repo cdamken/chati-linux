@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version here tracks the **project/repo** as a whole. The `chati` CLI also
 carries its own internal version (shown by `chati --version`).
 
+## [1.40.27] - 2026-11-26
+
+### Fixed
+- **`chati --status` now reports the SearXNG endpoint `/web` actually uses.** It
+  keyed off the bundled instance on port 8890, so a box with a system SearXNG
+  (wired via `SEARXNG_URLS`) showed "SearXNG: stopped" even though search worked.
+  Status now shows the configured endpoint and whether it is reachable, and only
+  falls back to the bundled-process view when no endpoint is configured.
+
 ## [1.40.26] - 2026-11-26
 
 ### Fixed
