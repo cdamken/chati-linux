@@ -529,12 +529,23 @@ else
     fi
     # Linux (Debian/Ubuntu). Same tools as the Brewfile, via apt; groovy (docr's
     # PDF-graphics helper) is skipped here — docr falls back to tesseract.
-    step "Installing packages with apt (you may be prompted for your password)"
+    step "Installing packages with apt"
     command -v apt-get >/dev/null 2>&1 || die "This Linux path expects apt-get (Debian/Ubuntu). For another distro, install: curl jq lynx tesseract imagemagick ghostscript poppler-utils python3 python3-venv, then re-run with --no-pull."
-    sudo apt-get update -y
-    sudo apt-get install -y curl jq lynx tesseract-ocr tesseract-ocr-eng \
-        imagemagick ghostscript poppler-utils python3 python3-venv
-    ok "apt packages installed"
+    # Only touch apt when something is actually missing. A re-run (every
+    # `chati --upgrade` re-runs setup) must not sudo + `apt-get update` + reinstall
+    # a box that already has everything: that was slow and noisy for a code-only
+    # upgrade, and prompted for a password each time for nothing.
+    APT_PKGS=(curl jq lynx tesseract-ocr tesseract-ocr-eng imagemagick ghostscript poppler-utils python3 python3-venv)
+    apt_missing=()
+    for _p in "${APT_PKGS[@]}"; do dpkg -s "$_p" >/dev/null 2>&1 || apt_missing+=("$_p"); done
+    if (( ${#apt_missing[@]} == 0 )); then
+        ok "apt packages already present (nothing to install)"
+    else
+        warn "Installing missing apt packages (you may be prompted for your password): ${apt_missing[*]}"
+        sudo apt-get update -y
+        sudo apt-get install -y "${apt_missing[@]}"
+        ok "apt packages installed (${apt_missing[*]})"
+    fi
     # uv drives the OpenWebUI and SearXNG Python venvs; skip it on a --minimal /
     # client box that installs neither (nothing else uses it). Ollama via its
     # official Linux installer if absent.
@@ -632,22 +643,23 @@ else
     warn "Couldn't link into $LINK_BIN — run it as ./chati, or add the repo to your PATH."
 fi
 
-# ---- 5c. Apple Vision OCR helper (macOS) ------------------------------------
+# ---- 5c. Apple Vision OCR helper (macOS only) -------------------------------
 # Compile the native Vision text-recognition helper so chati's OCR uses it
-# (much faster + more accurate than tesseract on real photos, reads HEIC
+# (much faster and more accurate than tesseract on real photos, reads HEIC
 # directly). Non-fatal: if swiftc is missing or the build fails, chati falls
-# back to docr/tesseract automatically.
-step "Building the Apple Vision OCR helper"
-if [[ "$CHATI_PLATFORM" != macos ]]; then
-    ok "Skipped on Linux — OCR uses tesseract/pdftotext (Apple Vision is macOS-only)"
-elif command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
-    if swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null; then
-        ok "Apple Vision OCR ready (docr/ocrvision) — the default OCR engine on macOS"
+# back to docr/tesseract automatically. On Linux this helper doesn't exist and
+# OCR uses tesseract/pdftotext, so the step is skipped silently (nothing to say).
+if [[ "$CHATI_PLATFORM" == macos ]]; then
+    step "Building the Apple Vision OCR helper"
+    if command -v swiftc >/dev/null 2>&1 && [[ -f "$REPO_ROOT/docr/ocr_vision.swift" ]]; then
+        if swiftc -O "$REPO_ROOT/docr/ocr_vision.swift" -o "$REPO_ROOT/docr/ocrvision" 2>/dev/null; then
+            ok "Apple Vision OCR ready (docr/ocrvision), the default OCR engine on macOS"
+        else
+            warn "Vision helper didn't compile; chati will use docr/tesseract for OCR."
+        fi
     else
-        warn "Vision helper didn't compile — chati will use docr/tesseract for OCR."
+        warn "swiftc not found; skipping Vision helper; chati will use docr/tesseract for OCR."
     fi
-else
-    warn "swiftc not found — skipping Vision helper; chati will use docr/tesseract for OCR."
 fi
 
 # ---- 6. Start Ollama ---------------------------------------------------------
@@ -679,7 +691,15 @@ else
 fi
 if [[ "$MODEL_EXPLICIT" -ne 1 ]]; then
     CHAT_MODEL="$(recommend_model "$SIZE_GB")"
-    ok "Detected ${SIZE_GB} GB ${SIZE_KIND} → selected model: $CHAT_MODEL"
+    # Only announce a freshly chosen model when we'll actually pull it. Under
+    # --no-pull, CHAT_MODEL is just a suggestion for the "nothing installed" hint;
+    # claiming it as "selected" when it isn't installed here (and won't be pulled)
+    # was misleading. The --no-pull branch below reports what's really installed.
+    if [[ "$WANT_PULL" -eq 1 ]]; then
+        ok "Detected ${SIZE_GB} GB ${SIZE_KIND}, selected model: $CHAT_MODEL"
+    else
+        ok "Detected ${SIZE_GB} GB ${SIZE_KIND}"
+    fi
 fi
 # Ensure the shared general models + the RAG embedder alongside the chat model,
 # so every box in a multi-host pool runs the SAME models (see select_extra_models).
@@ -702,9 +722,25 @@ fi
 WEB_HELPER_MODELS="llama3.2:3b llama3.1:8b"
 
 if [[ "$WANT_PULL" -eq 0 ]]; then
-    have_any_model \
-        && ok "Using existing model(s): $(installed_models | paste -sd, -)" \
-        || warn "--no-pull set but no model installed. Run: ollama pull $CHAT_MODEL"
+    if have_any_model; then
+        # Point chati at a model that actually exists here. --no-pull means we
+        # install nothing, so if the saved active model isn't present, fall to the
+        # first installed chat model (skip embedders, which can't chat). Without
+        # this, chati started pointed at a model that was never pulled on this box.
+        active_file="${CHATI_DATA_HOME:-$HOME/.local/share/chati}/.active_ollama_model.txt"
+        mkdir -p "$(dirname "$active_file")" 2>/dev/null
+        current="$(cat "$active_file" 2>/dev/null || true)"
+        if ! installed_models | grep -qxF "$current"; then
+            CHAT_MODEL="$(installed_models | grep -viE 'embed|^bge-' | head -n1)"
+            if [[ -n "$CHAT_MODEL" ]]; then
+                printf '%s\n' "$CHAT_MODEL" > "$active_file"
+                ok "Set active model → $CHAT_MODEL (first installed chat model)"
+            fi
+        fi
+        ok "Using existing model(s): $(installed_models | paste -sd, -)"
+    else
+        warn "--no-pull set but no chat model is installed. Pull one, e.g.: ollama pull $CHAT_MODEL"
+    fi
 else
     if installed_models | grep -qxF "$CHAT_MODEL"; then
         ok "Model '$CHAT_MODEL' already present"
@@ -827,16 +863,26 @@ if [[ "$WANT_WEBUI" -eq 1 ]]; then
     fi
 fi
 if [[ "$WANT_SEARXNG" -eq 1 && "$SEARXNG_STARTED" -eq 1 ]]; then
-    echo "Web search (/web):       ready — toggle with /web inside chati"
+    echo "Web search (/web):       ready, toggle with /web inside chati"
 fi
+# Report the models that are ACTUALLY installed now, not a hardcoded wishlist:
+# the old summary named the big gemma4 models and "auto-pulled" /web helpers even
+# on a box that skipped the big models or ran with --no-pull.
+INSTALLED_NOW="$(installed_models | paste -sd', ' -)"
 cat <<EOF
 Service status:          chati --status
 Stop everything:         chati --stop
-Shared models:           gemma4:31b + gemma4:26b + bge-m3 (default; --no-extra-models to skip)
-/web helpers:            llama3.2:3b (route) + llama3.1:8b (queries) — auto-pulled
-Uninstall everything:    ./setup.sh --remove-all
+Models installed:        ${INSTALLED_NOW:-none yet}
+Uninstall everything:    $REPO_ROOT/setup.sh --remove-all
 EOF
-echo "  (Ollama has no auth and stays on localhost. To share it on a server, start it as"
-echo "   OLLAMA_HOST=0.0.0.0:11434 ollama serve on a trusted network or over Tailscale.)"
+if [[ "$CHATI_PLATFORM" == macos ]]; then
+    echo "  (Ollama has no auth and stays on localhost. To reach it from another machine,"
+    echo "   put it on your tailnet rather than binding it to every interface.)"
+else
+    echo "  (Ollama has no auth and stays on localhost. To reach it from your other machines,"
+    echo "   keep it on localhost and expose it over your tailnet:"
+    echo "     tailscale serve --bg --tcp 11434 tcp://127.0.0.1:11434"
+    echo "   Don't bind Ollama to 0.0.0.0 on a public server.)"
+fi
 echo "Install log:             ${INSTALL_LOG:-$HOME/logs/chati_install_*.log}"
 echo
